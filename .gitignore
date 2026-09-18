@@ -6,12 +6,29 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+dist/
+build/
+
+# 项目本地环境与下载物（PRD 5.2，均不提交）
 .venv/
-venv/
+.tools/
+.cache/
+models/
+vendor/
+runtime/
+workspace/
 
 # 环境与密钥
 .env
 .env.*
 
+# spike 大体积产物：STL 与临时重跑目录不进库；
+# 可用 params_snapshot.json + relief_spike.py 确定性重建（sha256 一致已验证）
+experiments/relief_spike/out/**/relief_solid.stl
+experiments/relief_spike/out/_rerun_a/
+
 # 系统文件
 .DS_Store
+
+# uv
+# uv.lock 必须提交（PRD 11.4），不加忽略

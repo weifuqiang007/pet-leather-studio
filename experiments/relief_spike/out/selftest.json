@@ -1,0 +1,107 @@
+{
+  "sample_a_head": {
+    "no_nan_inf": true,
+    "width_mm": {
+      "target": 80.0,
+      "measured": 80.0,
+      "abs_err_mm": 0.0,
+      "pass_le_0.01mm": true
+    },
+    "height_y_mm": {
+      "expected_from_aspect": 80.0
+    },
+    "watertight": true,
+    "winding_consistent": true,
+    "volume_positive": true,
+    "volume_mm3": 14856.5491,
+    "euler_number": 2,
+    "face_count": 1048572,
+    "dx_mm": 0.15655577299412915,
+    "dy_mm": 0.15655577299412915,
+    "renderers": {
+      "front": "pyvista_offscreen",
+      "oblique": "pyvista_offscreen",
+      "side": "pyvista_offscreen",
+      "front_zx3": "pyvista_offscreen",
+      "oblique_zx3": "pyvista_offscreen",
+      "side_zx3": "pyvista_offscreen"
+    },
+    "stl_sha256": "c413730e78d5e94c96258526aebe74ffd8dbac3bc3fd4697c048ca6773cb0fa4",
+    "annotation_sha256": "4001625bc158938182b2de87058ee0ca7b4bbd885ff74900de872946531a5e2a",
+    "elapsed_s": 7.96
+  },
+  "sample_b_bump": {
+    "no_nan_inf": true,
+    "width_mm": {
+      "target": 60.0,
+      "measured": 60.0,
+      "abs_err_mm": 0.0,
+      "pass_le_0.01mm": true
+    },
+    "height_y_mm": {
+      "expected_from_aspect": 60.0
+    },
+    "watertight": true,
+    "winding_consistent": true,
+    "volume_positive": true,
+    "volume_mm3": 8207.154,
+    "euler_number": 2,
+    "face_count": 1048572,
+    "dx_mm": 0.11741682974559686,
+    "dy_mm": 0.11741682974559686,
+    "renderers": {
+      "front": "pyvista_offscreen",
+      "oblique": "pyvista_offscreen",
+      "side": "pyvista_offscreen",
+      "front_zx3": "pyvista_offscreen",
+      "oblique_zx3": "pyvista_offscreen",
+      "side_zx3": "pyvista_offscreen"
+    },
+    "stl_sha256": "dc6ad12d9b8f110972079a0c82793e702e4886c212326cb8a16ee64f01a9a476",
+    "annotation_sha256": "2e35ea2e1ab0f9b2886e58f30c5a01462061c26ddc3f33122b8bcffafdd9d0aa",
+    "elapsed_s": 5.69
+  },
+  "sample_c_flat": {
+    "no_nan_inf": true,
+    "width_mm": {
+      "target": 50.0,
+      "measured": 50.0,
+      "abs_err_mm": 0.0,
+      "pass_le_0.01mm": true
+    },
+    "height_y_mm": {
+      "expected_from_aspect": 62.5
+    },
+    "watertight": true,
+    "winding_consistent": true,
+    "volume_positive": true,
+    "volume_mm3": 6250.0,
+    "euler_number": 2,
+    "face_count": 1310716,
+    "dx_mm": 0.09784735812133072,
+    "dy_mm": 0.09780907668231612,
+    "renderers": {
+      "front": "pyvista_offscreen",
+      "oblique": "pyvista_offscreen",
+      "side": "pyvista_offscreen",
+      "front_zx3": "pyvista_offscreen",
+      "oblique_zx3": "pyvista_offscreen",
+      "side_zx3": "pyvista_offscreen"
+    },
+    "stl_sha256": "c2a5e9aa2c504146341cdecad8641dcd2a19038b4fa8452949eba9c9ed575024",
+    "annotation_sha256": "078448927ff440dc1847395f7342d732329a416e207928561ef53fedb235b2bc",
+    "elapsed_s": 6.41
+  },
+  "locality": {
+    "delta_mm": 0.5,
+    "changed_points": 4928,
+    "leaked_points_outside_influence": 0
+  },
+  "reproducibility": {
+    "stl_sha256_run1": "c413730e78d5e94c96258526aebe74ffd8dbac3bc3fd4697c048ca6773cb0fa4",
+    "stl_sha256_run2": "c413730e78d5e94c96258526aebe74ffd8dbac3bc3fd4697c048ca6773cb0fa4",
+    "identical": true
+  },
+  "failures": [],
+  "all_pass": true
+}

@@ -1,0 +1,43 @@
+# CI 质量门（PRD 11.6）。
+# 真机交互（VTK 渲染、macOS 窗口关闭、Blender 往返）不在 CI 内，需本地验收。
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: ruff / mypy / pytest(unit+architecture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync frozen dependencies（含 dev 组）
+        run: uv sync --frozen --python 3.11 --extra dev
+
+      - name: Ruff check
+        run: uv run --frozen ruff check .
+
+      - name: Ruff format check
+        run: uv run --frozen ruff format --check .
+
+      - name: mypy（domain/application）
+        run: uv run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
+
+      - name: pytest（unit + architecture，无图形设备）
+        run: uv run --frozen pytest tests/unit tests/architecture -v

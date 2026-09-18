@@ -1,0 +1,31 @@
+{
+  "no_nan_inf": true,
+  "width_mm": {
+    "target": 80.0,
+    "measured": 80.0,
+    "abs_err_mm": 0.0,
+    "pass_le_0.01mm": true
+  },
+  "height_y_mm": {
+    "expected_from_aspect": 80.0
+  },
+  "watertight": true,
+  "winding_consistent": true,
+  "volume_positive": true,
+  "volume_mm3": 14856.5491,
+  "euler_number": 2,
+  "face_count": 1048572,
+  "dx_mm": 0.15655577299412915,
+  "dy_mm": 0.15655577299412915,
+  "renderers": {
+    "front": "pyvista_offscreen",
+    "oblique": "pyvista_offscreen",
+    "side": "pyvista_offscreen",
+    "front_zx3": "pyvista_offscreen",
+    "oblique_zx3": "pyvista_offscreen",
+    "side_zx3": "pyvista_offscreen"
+  },
+  "stl_sha256": "c413730e78d5e94c96258526aebe74ffd8dbac3bc3fd4697c048ca6773cb0fa4",
+  "annotation_sha256": "4001625bc158938182b2de87058ee0ca7b4bbd885ff74900de872946531a5e2a",
+  "elapsed_s": 7.96
+}

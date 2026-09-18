@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "algorithm": "region_basis_additive_heightfield_v1",
+  "output_width_mm": 50.0,
+  "base_thickness_mm": 2.0,
+  "grid_nx": 512,
+  "image_size_px": [
+    800,
+    1000
+  ],
+  "seed": 0,
+  "annotation_name": "sample_c_flat",
+  "regions": []
+}

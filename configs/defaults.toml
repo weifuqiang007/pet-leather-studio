@@ -1,0 +1,22 @@
+# 默认配置（PRD 11.4）。用户覆盖写入 runtime/config.toml，不入库。
+# 所有几何长度单位 mm。
+
+[app]
+language = "zh-CN"
+
+[rendering]
+# 预览高度场分辨率（像素）；生产导出分辨率按工件尺寸/最小特征计算（PRD 12.1）
+preview_resolution = 512
+
+[relief]
+# 基础浅浮雕默认参数（M0.5 试验值，非工艺推荐值）
+width_mm = 80.0
+base_thickness_mm = 2.0
+relief_depth_mm = 3.0
+
+[blender]
+# 允许用户已有安装位于 APP_ROOT 外（PRD 5.1）；为空时按候选路径探测
+executable_path = ""
+candidate_paths_macos = [
+    "/Applications/Blender.app/Contents/MacOS/Blender",
+]

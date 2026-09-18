@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "algorithm": "region_basis_additive_heightfield_v1",
+  "output_width_mm": 60.0,
+  "base_thickness_mm": 2.0,
+  "grid_nx": 512,
+  "image_size_px": [
+    800,
+    800
+  ],
+  "seed": 0,
+  "annotation_name": "sample_b_bump",
+  "regions": [
+    {
+      "id": "bump",
+      "polygon": [
+        [
+          400.0,
+          250.0
+        ],
+        [
+          550.0,
+          400.0
+        ],
+        [
+          400.0,
+          550.0
+        ],
+        [
+          250.0,
+          400.0
+        ]
+      ],
+      "height_mm": 2.0,
+      "falloff_px": 100.0
+    }
+  ]
+}

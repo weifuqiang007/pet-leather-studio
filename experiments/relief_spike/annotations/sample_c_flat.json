@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "description": "零浮雕平板块：解析体积 == W×H×base（合成自测样本，非矩形宽高比）",
+  "image_size_px": [800, 1000],
+  "output_width_mm": 50.0,
+  "base_thickness_mm": 2.0,
+  "grid_nx": 512,
+  "seed": 0,
+  "regions": []
+}

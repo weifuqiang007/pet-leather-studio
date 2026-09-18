@@ -1,6 +1,7 @@
 # 宠物皮革浮雕工作台：产品需求与工程实施规范
 
-- 文档版本：1.0
+- 文档版本：1.1
+- 修订依据：PRD-review-issues.md；逐条处置见 PRD-review-response.md
 - 日期：2026-09-18
 - 项目代号：Pet Leather Studio
 - 适用对象：产品负责人、GLM 编程代理、Python/Qt 开发者、建模与模具服务商
@@ -72,7 +73,7 @@ R1 的“基础模具”限定为沿 Z 方向可成形、无倒扣的浅浮雕�
 
 | 层次 | 选型 | 边界 |
 |---|---|---|
-| Python | 首选 3.11.x，按本机依赖兼容性锁定 | 不使用未测试的最新版本 |
+| Python | 首选 3.11.x，按本机依赖兼容性锁定 | 若必要依赖要求更高版本，doctor 验证并经 ADR 升级；不以“最新”为唯一理由 |
 | 窗口与控件 | PySide6 / Qt Widgets | GUI 仅处理展示、用户输入、状态同步 |
 | 三维查看 | PyVista + pyvistaqt + VTK | QtInteractor 嵌入主窗口；渲染仅在 GUI 线程 |
 | 图像处理 | Pillow、NumPy；必要时 opencv-python-headless | 避免 OpenCV 自带 GUI 与 Qt 冲突 |
@@ -88,7 +89,15 @@ R1 的“基础模具”限定为沿 Z 方向可成形、无倒扣的浅浮雕�
 
 在开发完整 UI 前验证本机 CPU 架构、系统版本、内存、可用空间、Python wheel 可用性和 VTK 渲染。硬件信息写入 runtime/system_profile.json。
 
-冒烟测试：启动 PySide6，嵌入 QtInteractor，显示并旋转一个网格，正常关闭。不能以 mock 渲染通过替代真实本机验证。失败时记录根因、选兼容依赖版本；不要悄悄换成截图查看器。
+冒烟测试：启动 → 显示测试网格 → 连续旋转/缩放/改窗口尺寸至少 5 分钟 → 更新网格 → 正常关闭；完整启停至少 10 次，检查退出码和崩溃日志。记录操作系统、架构、Python、PySide6、PyVista、pyvistaqt、VTK 的具体版本及关键日志到 docs/reports/M0-rendering.md，并锁定通过的组合。不能以 mock 或离屏截图通过替代交互真机验证。
+
+失败时先用最小复现确认事件循环、对象销毁和版本兼容问题，允许的退路依次为：
+1. 固定或调整经过验证的兼容版本，不无限尝试随机组合；初步定位时间盒 2 个开发日，届时记录结论。
+2. 若问题定位在包装层，尝试 VTK 官方 vtkmodules.qt.QVTKRenderWindowInteractor，统一封装为 ViewerAdapter；这与 pyvistaqt 共享部分底层栈，不保证修复底层 Qt/VTK/OpenGL 问题。
+3. 若嵌入仍不可用，允许独立交互三维窗口作为已记录的临时方案；必须保持模型版本同步、旋转缩放、正常关闭等功能。必要时独立进程隔离崩溃。独立窗口也必须通过上述测试，不是静态截图。
+4. 在 ADR 记录选定方案、失去的交互及恢复条件。所有交互方案均失败时，将查看模块标为阻塞，仍可推进脚本算法验证；不得宣称 M0 渲染通过。
+
+独立窗口临时方案通过后，界面布局可使用“打开三维视图”入口代替嵌入视口，其他功能和数据契约不变。没有本机复现前，不将某库“维护薄弱”或“高频崩溃”作为事实写入选型结论。
 
 AI 默认具备 CPU 回退路径；Apple Silicon 的 MPS 仅在模型实际支持并通过测试后启用，不能默认要求 NVIDIA/CUDA。
 
@@ -125,11 +134,14 @@ pet-leather-studio/
   uv.lock
   README.md
   .gitignore
-  .env.example
+  .github/workflows/
+    ci.yml                        # M0 建立质量门，随实现增加测试
   docs/
     PRD.md
     architecture.md
     acceptance.md
+    glossary.md
+    PRD-review-response.md
     adr/
     reports/
   configs/
@@ -137,6 +149,8 @@ pet-leather-studio/
     material_examples/             # 明确标为示例，非实测
     schemas/
     model_catalog.json             # 可用模型与版本/许可清单，不含权重
+  experiments/
+    relief_spike/                 # M0.5 独立验证，非生产模块依赖
   scripts/
     bootstrap.py
     launch.py
@@ -182,6 +196,7 @@ pet-leather-studio/
       workers/
       model_providers/
       blender/
+        scripts/                  # 项目自带、版本受控的 Blender 导入导出脚本
       freecad/                    # 仅 capability/协议适配占位，不伪实现
       simulation/                 # 同上
       exporters/
@@ -230,7 +245,7 @@ Windows/macOS/Linux 使用 pathlib。中文、空格、括号、# 等路径须�
 |---|---|
 | 主程序依赖安装位置 | APP_ROOT/.venv/ |
 | 可选 AI 隔离环境 | DATA_ROOT/runtime/envs/<provider-id>/ |
-| Python 包归档 | DATA_ROOT/vendor/python/<os>-<arch>-py311/ |
+| Python 包归档 | DATA_ROOT/vendor/python/<os>-<arch>-<python-abi>/ |
 | uv 缓存 | DATA_ROOT/.cache/uv/ |
 | pip 缓存（如确需） | DATA_ROOT/.cache/pip/ |
 | 本项目 Python 运行时 | DATA_ROOT/.tools/python/ |
@@ -285,6 +300,7 @@ Qt 绑定设置 QT_API=pyside6。模型普通运行设置 HF_HUB_OFFLINE=1；离
 | Project | id、name、schema_version、created_at、updated_at、active_revision_id |
 | Artifact | id、kind、relative_path、sha256、size_bytes、unit、coordinate_frame、created_at |
 | Revision | id、parent_ids、input_artifact_ids、parameters、algorithm_version、model_revision、seed、outputs |
+| Draft | id、feature、base_revision_id、generation、schema_version、updated_at、parameter_snapshot、annotation_refs |
 | AnnotationSet | source_image_id、transform_chain、landmarks、regions、manual/AI 来源 |
 | FurCurve | id、region_id、points、surface_revision_id、width_mm、depth_mm、order、seed |
 | MaterialProfile | id、batch、state、properties、units、data_source、test_conditions、calibration_status |
@@ -303,8 +319,12 @@ workspace/<uuid>/
   project.sqlite                  # 元数据主存储
   originals/                      # 原始图片只读副本
   annotations/
+  drafts/<feature>/<draft-id>/     # 可变草稿，正式版本之外
+    snapshot.json
+    previous.json
   revisions/<revision-id>/
     parameters.json
+    heightfield.npz               # 基础形体、纹理层、有效域与网格间距
     target_surface.obj
     relief_solid.stl
     fur_curves.json
@@ -324,6 +344,20 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 版本为不可变产物：修改参数产生新 revision，不能覆盖已用于打印/质检的版本。上游变更后下游标为 stale，保留历史，不自动替换。
 
 迁移前备份；迁移失败可恢复；较新 schema 不强行读取写回。导出工程包必须使用相对路径，禁止路径穿越，默认不包含模型权重、缓存或密钥。
+
+### 6.4 草稿生命周期与崩溃恢复
+
+草稿的参数/标注快照以 drafts/ 内原子写文件为真源，不作为正式 Revision 入库；SQLite 可索引草稿 id、base_revision_id、路径及 hash，索引可由草稿文件重建，不能保存另一份独立可编辑正文。
+
+- 首次编辑从已提交版本建立草稿；记录 base_revision_id 与单调递增 generation。
+- 页面切换、明确保存草稿和正常关闭时触发持久化；连续编辑采用最多 2 秒一次的节流保存，而不是无限延期的防抖。
+- 临时文件写完校验后原子替换，保留上一份有效快照。损坏的最新快照回退上一份并提示。
+- 崩溃后询问恢复哪个有效草稿，并显示最后成功保存时间。可能损失最后一次成功写入后的操作，不承诺零数据丢失；磁盘写入失败要持续显示“未保存”。
+- “保存新版本”冻结草稿 generation、依赖和参数，生成产物并提交 Revision；期间新编辑进入后续草稿，不受旧任务覆盖。
+- 保存成功后只有对应 generation 可标已提交；失败保留可恢复草稿，不制造成功状态。
+- 默认仅恢复最新编辑状态，不要求跨重启恢复完整 undo 历史；同一运行会话支持 undo/redo。
+- 丢弃草稿是显式操作；切换 base revision 时保留旧草稿并提示冲突，不自动合并。
+- 草稿导出默认关闭，可由用户选择携带；清理临时文件不得误删 drafts。
 
 ## 7. 交互策略
 
@@ -368,6 +402,7 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 - AC-F01-02：中文空格路径可用；外部原图删除后项目仍完整。
 - AC-F01-03：保存途中模拟失败，旧版本可读且未损坏。
 - AC-F01-04：导出工程包并换目录导入，引用不含旧绝对路径。
+- AC-F01-05：修改未提交参数后切页、模拟崩溃并重开，可恢复最后有效草稿；损坏最新快照可回退上一份，旧正式版本始终不变。
 
 ### F02 图像与标注（R1）
 
@@ -383,7 +418,16 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 
 输入：轮廓、五官区域、成品宽度、深度参数。输出：连续高度场、目标表面网格、带底封闭打印实体。
 
-基线算法：由人工/AI 标注构造区域平滑基函数或可编辑高度场；鼻子、脸颊、额头、眼眶分别控制；边界向背景平滑过渡；深度估计是可选混合输入，不从 RGB 亮度直接复制 Z。支持重叠区域规则并保存完整参数。
+基线算法候选：由人工/AI 标注构造区域平滑基函数或可编辑高度场；鼻子、脸颊、额头、眼眶分别控制；边界向背景平滑过渡；深度估计是可选混合输入，不从 RGB 亮度直接复制 Z。该候选必须经 M0.5 相似度试验验证，失败时调整曲面构造或引入 Blender 修形，不因几何测试通过就认定路线有效。支持重叠区域规则并保存完整参数。
+
+R1 统一几何管线（硬约束）：
+1. 保存带 mm 网格间距、原点、有效域的基础高度场 H_base(x,y)，每个有效 XY 只有一个表面高度。
+2. 毛纹由版本化曲线计算位移层 H_texture，目标表面 H_target=H_base+H_texture；纹理宽度/深度规则定义于 XY 平面与 Z 方向，陡坡不宣称为等法向宽深。
+3. 上模接触面由目标外表面生成互补形体，下模由大形体及显式间隙近似生成；上下关系以同一装配坐标验证，不盲目把高度值乘 -1。
+4. 保存高度层、曲线与参数；按第 12.1 节确定导出采样，再对每个最终产物实体化并封边。预览可随时生成轻量网格。
+5. 禁止逐根毛纹与高面数头像做网格布尔作为主流程；定位柱孔等少量非高度场辅助结构允许受控布尔并验证有效性。
+6. 沿 Z 不可单值表达的倒扣/悬垂不进入 R1 参数化生成管线，不能静默删除。
+7. Blender 返回的网格先验证坐标、单值性和表面覆盖，再重采样回高度场；报告重采样误差。无法在设定公差内表达时只保存为外部网格分支，允许查看/导出，但禁用依赖高度场的继续生成并说明原因。不得把“可打开任意 OBJ”等同“可继续参数编辑任意网格”。
 
 验收：
 - AC-F03-01：一张照片仅经人工标注即可生成基础浮雕，不依赖网络。
@@ -391,12 +435,14 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 - AC-F03-03：测试输出宽度与设定值误差 ≤0.01 mm；数值检查无 NaN/Inf。
 - AC-F03-04：导出的基础实体封闭、法向一致、体积为正；发现自交时不能静默通过。
 - AC-F03-05：有正面、侧面、无贴图预览；同参数和 seed 产生可复现几何（跨平台按公差比较）。
+- AC-F03-06：按第 12.4 节执行人工形体/相似度评审，记录样本、模型版本、评价与修改次数。结论未通过或待评审不能以技术指标代替通过。
+- AC-F03-07：基础层、纹理层和有效域可持久化重建；不支持的多值曲面明确拒绝进入高度场管线。
 
 ### F04 三维查看与 Blender 往返（R1）
 
-现有 Blender 通过配置路径或有限候选路径检测；调用 --version 校验。用参数数组启动进程，不用 shell 拼接。首次集成先做离线往返小样，不注入未审核的外部脚本。
+现有 Blender 通过配置路径或有限候选路径检测；调用 --version 校验并记录版本与可执行路径。用参数数组启动进程，不用 shell 拼接。首次集成先做离线往返小样。允许运行 infrastructure/blender/scripts/ 中项目自带、经过代码审查并纳入版本控制的脚本；记录脚本 hash。禁止运行模型文件携带或远程获取的未审核脚本，加载 .blend 默认禁用文件自带脚本自动执行。
 
-接口文件包含 project_id、input_revision、单位、坐标变换与源 hash。编辑另存 .blend 并经本项目脚本导出网格；用户在应用中“导入编辑结果”创建版本。文件监视只通知，不自动覆盖。
+接口文件包含 project_id、input_revision、单位、坐标变换、源 hash、blender_version、bridge_script_hash；不同 Blender 版本的 .blend 兼容性须提示并通过往返测试验证。编辑另存 .blend 并经本项目脚本导出网格；用户在应用中“导入编辑结果”创建版本。文件监视只通知，不自动覆盖。
 
 验收：
 - AC-F04-01：基础预览不依赖 Blender；找到现有程序后能打开指定副本。
@@ -404,6 +450,7 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 - AC-F04-03：Blender 编辑产生新版本，旧版仍可打开。
 - AC-F04-04：未编辑往返可保留关联；拓扑或坐标显著变化时毛纹绑定标 stale，不能按旧顶点序号错误绑定。
 - AC-F04-05：Blender 路径错误、启动失败、导出缺失分别可诊断，不自动安装软件。
+- AC-F04-06：单值编辑网格重采样后误差在用户设定公差内才恢复高度场编辑；有倒扣或覆盖缺失的网格保留为外部分支，不强行修正。
 
 ### F05 毛流、毛纹与测试块（R1）
 
@@ -415,9 +462,10 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 
 验收：
 - AC-F05-01：修改密度/方向后仍在区域内，不越过禁入边界。
-- AC-F05-02：纹理导出为真实凹凸，重新导入 STL 的剖面可以测得对应深度。
+- AC-F05-02：纹理导出为真实凹凸；解析纹理块在不同栅格相位与方向（0°/45°/90°）测试，重新导入 STL 后宽度按指定截面定义测量，宽度及深度绝对误差分别不超过 max(设计值×10%, 0.01 mm)。未达标提高采样或报错，不允许降低设计要求悄悄通过。此为软件离散化指标，不是打印或压皮精度。
 - AC-F05-03：同 seed/参数重建曲线一致；编号与参数 CSV/JSON 一一对应。
 - AC-F05-04：过细、交叉密集或可能破坏最小皮层参数的纹理给出可定位警告，不自动删改。
+- AC-F05-05：由实际尺寸和最小有效特征计算网格采样；资源不足时提供分块/分件或显式修改设计选项，不能用预览网格导出生产文件。
 
 ### F06 模具候选与打印导出（R1）
 
@@ -429,7 +477,7 @@ SQLite 是索引与事务主存储；project.json 是快照，不形成两个可
 - AC-F06-01：平面/缓坡解析测试中，指定轴向间隙正确，误差 ≤0.02 mm。
 - AC-F06-02：在剖面中验证皮面凹纹对应上模凸纹，方向不会反转。
 - AC-F06-03：上下模各自闭合，定位结构装配无意外穿透；自交/倒扣/不支持坡面有报告。
-- AC-F06-04：导出 STL+OBJ+manifest+参数表；manifest 含单位、版本、hash、近似方法、未验证事项。
+- AC-F06-04：导出 STL+OBJ+manifest+参数表；manifest 含单位、版本、hash、近似方法、未验证事项，以及 nx/ny、dx_mm/dy_mm、最小特征、曲线采样间距、网格简化公差、面数和实测离散化误差。
 - AC-F06-05：用独立重新导入检查包围盒与实体有效性；不能仅断言文件存在。
 
 ### F07 材料与设计检查（R1）；物理仿真接口（R3）
@@ -506,22 +554,27 @@ AI 报告是可选增强，先用确定性模板组织测量与人工标注即�
 class ReliefBuilder(Protocol):
     def build(self, request: ReliefRequest, context: JobContext) -> ReliefResult: ...
 
+
 class ModelProvider(Protocol):
     def capabilities(self) -> CapabilitySet: ...
     def infer(self, request: InferenceRequest, context: JobContext) -> InferenceResult: ...
+
 
 class ExternalEditor(Protocol):
     def probe(self, executable: Path) -> ToolCapability: ...
     def export_session(self, request: EditorRequest) -> EditorSession: ...
     def import_result(self, session: EditorSession) -> EditedArtifact: ...
 
+
 class SimulationProvider(Protocol):
     def capabilities(self) -> CapabilitySet: ...
     def validate(self, request: SimulationRequest) -> ValidationReport: ...
     def solve(self, request: SimulationRequest, context: JobContext) -> SimulationResult: ...
 
+
 class InspectionEngine(Protocol):
     def compare(self, request: InspectionRequest, context: JobContext) -> InspectionResult: ...
+
 
 class ToolpathPlanner(Protocol):
     def preview(self, request: ToolpathRequest, context: JobContext) -> ToolpathResult: ...
@@ -597,6 +650,17 @@ uv run --frozen pytest tests/gui
 
 这些命令应由启动/开发脚本注入第 5 章的本地路径，README 中提供完整可复制运行方式，不要求用户记忆环境变量。
 
+### 11.6 CI 质量门
+
+M0 建立 .github/workflows/ci.yml。触发 push、pull_request 和 workflow_dispatch，至少执行 Ruff check、format --check、mypy(domain/application)、pytest(unit/architecture)，实现后逐步加入无需图形设备的 integration 测试。采用固定 Python 版本与 uv.lock 的 frozen 安装，依赖缓存 key 包含 OS、架构、Python 与 lock hash，缓存位置保持 runner 工作区内。
+
+- 无 GPU、无模型下载、无私人宠物照片、无 Blender/FreeCAD 的 CI 必须能运行核心测试。
+- Qt 控件无显示测试可选；VTK 真机交互、macOS 窗口关闭、Blender 真机往返仍需本地验收，不能用 Linux CI 替代。
+- 依赖安装可联网，测试阶段检查业务离线路径；CI 不缓存/上传 workspace、令牌、私人图片或用户模型。
+- 权限最小化为 contents: read；第三方 action 固定可审计版本；外部 PR 不使用带权限执行未信任代码的触发方式。
+- 失败不允许合入 main。GitHub 分支保护/required checks 需仓库设置才能强制，不能因有 workflow 就宣称已启用；实现方记录是否配置，无权限时列为外部未完成项。
+- 纯文档阶段暂无代码测试可运行可明确说明；业务代码开始后不能用空测试套件或全 skip 制造绿色。
+
 ## 12. 性能、稳定性与测试标准
 
 ### 12.1 可验证性能预算
@@ -605,7 +669,14 @@ uv run --frozen pytest tests/gui
 - 普通启动不加载 AI，目标 ≤5 s。
 - 20 万三角形预览在参考机器上目标 ≥20 FPS；达不到则记录数据并优化 LOD，不能降低导出精度掩盖问题。
 - 512×512 高度场的基础生成目标 ≤10 s；大任务不阻塞 UI。
-- 预览分辨率 256/512 可选；高精度导出另行配置，估算内存并设置预算。
+- 预览分辨率 256/512 可选，生产分辨率按实际特征计算，不固定“2048 就一定够”。
+- 设工件 XY 跨度为 W/H，最小需保留纹理宽度或净间距为 f，初始要求每个特征至少跨 4 个采样间隔：dx,dy ≤ f/4，nx≥ceil(W/dx)+1，ny≥ceil(H/dy)+1；这是初始采样规则，仍须通过 AC-F05-02，必要时继续加密。
+- 例如 W=80 mm、f=0.2 mm，nx 至少 1601，2048 可作为起点；512 的间距约 0.157 mm，仅约 1.28 个间隔覆盖该线宽，不能保证纹理宽深稳定。1024 对这个例子仍不够，但对更小工件/更粗纹理可能足够。
+- 从原始曲线与高度层在目标分辨率重新求值；不能把 512 图像简单插值到 2048 就当作恢复细节。
+- 导出前显示 nx/ny、网格间距、预计面数、峰值内存估算；记录实际耗时与峰值 RSS。float32 高度场为 4*nx*ny 字节，但网格拓扑、法向和副本往往占用更多。
+- 2048×2048 单张完整网格表面约有 838 万三角形；含顶底面的完整实体可能接近两倍。不能以约 16 MiB 高度数组的大小推断整个任务内存。
+- 原型性能预算：1024 平方单件生成及导出目标 ≤60 s，2048 平方目标 ≤180 s；为参考机待验证目标，M0.5/M2 记录测量后更新，不含 AI 推理与文件外包。长任务后台执行，超出预算明确报出，不能牺牲精度。
+- 导出前估算若超过可用内存的 50%，需分块/流式/有误差界的简化或停止并提示。物理拆分纹理阵列为独立测试块需用户确认；简化必须重新通过纹理剖面验收。
 - 不预先宣称百万面精细网格可实时布尔运算；高开销步骤后台执行。
 
 性能未达标时必须提供实测及限制，不能只凭主观“很流畅”验收。
@@ -625,6 +696,19 @@ uv run --frozen pytest tests/gui
 合成平面、坡面、椭球浅浮雕、带已知宽深纹理的测试块、已知刚性变换扫描、局部 0.5 mm 偏移、缺失扫描区、反法向网格、损坏文件、中文路径样例。
 
 照片测试使用用户许可图片或自制示例。真实相似度与物理可制造性不能由合成测试替代。仿真、模拟扫描、真实扫描分别标记来源。
+
+### 12.4 产品形体与相似度评审门
+
+算法正确性与产品效果分开验收。基线不承诺从单张照片恢复未知侧面真实形状，也不承诺无颜色浮雕能区分外形完全相同但花色不同的宠物。
+
+- M0.5 使用至少 3 张合法参考图（猫、短毛狗、长吻狗等不同形体）；若只有一张，只能记为单样本初步验证，不能宣称泛化通过。
+- 输出中性材质、无照片贴图、无标注的正面/斜侧/侧视图，并另存原照片供并排检查。侧视用于评审形体合理性，不能把单张正照当作侧面真值。
+- 负责人逐项评价外轮廓、眼间距/位置、口鼻比例、耳部形态；每项记录“符合/需修改/明显错误”和依据，三张样本均无“明显错误”且修改完成后才记为该小样集通过。
+- 能否辨认为目标宠物另记主观结论；区分“像猫狗”“符合该宠物形体”“个体识别”。个体主要靠毛色区分时记录限制，待上色验证，不以黑白几何模型承诺个体识别率。
+- 记录人工标注、调参、Blender 修形用时和次数。暂用每样本 30 分钟为可用性预警预算（非保证）；负责人无法在合理辅助下操作时登记 UX/算法问题，不以开发者无限手修掩盖。
+- 评审报告记录样本、参数、算法版本、输出 hash、评审人/时间和结论。无人评审时为 pending，不让代理代替用户勾选通过。
+- 失败时先调整基线，不进入依赖该几何质量的复杂毛纹/模具量产优化；可并行推进通用 GUI、文件和测试基础设施。
+- 软件形体门与实物工艺门独立：未试压可继续软件开发，但不能标为已验证可生产。压制试验需配套模具/承压评审与皮革，单个打印头像不等于验证了转印。
 
 ## 13. 质检闭环与变更规则
 
@@ -651,19 +735,29 @@ uv run --frozen pytest tests/gui
 
 ### M0 环境与骨架
 
-交付：本地目录管理、doctor、锁定依赖、Qt+VTK 真机冒烟、架构空骨架、最小日志。
+交付：本地目录管理、doctor、锁定依赖、Qt+VTK 真机冒烟、架构空骨架、最小日志、CI 工作流和渲染选型报告。检查根目录 main.py；仅确认是未被使用的 PyCharm 示例时删除或迁出正式入口，若已有业务代码先迁移保留，不能盲删。
 
 通过条件：从不同 cwd 启动成功；普通启动不联网；未安装 FreeCAD 不报致命错误；本地环境可重复安装。记录 Blender 检测结果，不未经验证宣称已集成。
+
+### M0.5 算法可行性短验证
+
+与 M0 环境验证可部分并行，先用纯脚本执行照片 → 手工/固定标注 → 高度层 → 封闭 STL，输出第 12.4 节规定的无贴图多视图和相似度评审包。放入 experiments/relief_spike/，使用简单 JSON/NPZ 和本地依赖；不是生产级数据仓库，也不豁免单位、可复现和文件校验要求。通过后提炼算法并补测试，不直接让生产层导入试验脚本。
+
+交付：至少 3 个小样、可重跑参数、STL、视图、人工操作时间、路线结论。负责人尚未评审时列 pending，不阻断无关基础工作，也不能声称算法路线已通过。
+
+实物渠道可用时尽早送小型形体及编号纹理测试件，并在服务商确认模具/载荷后试压；无渠道时先输出候选打样包和物理未验证清单。不能因等打印/压机而停掉所有软件工作。不得发起采购或外部联系，仅准备可评审文件。
 
 ### M1 第一个垂直闭环
 
 交付：F01/F02/F03 基线与三维预览。
 
-通过条件：导入照片 → 手画轮廓/五官 → 调整鼻高 → 查看侧面 → 导出封闭 STL → 重开项目。无 AI 也全程可用。对应 AC 全通过。
+通过条件：导入照片 → 手画轮廓/五官 → 调整鼻高 → 查看侧面 → 导出封闭 STL → 重开项目。无 AI 也全程可用。对应 AC 全通过，包括草稿恢复与人工形体门；pending 单独列出，不合并成“全部通过”。
+
+M1 正式版保留 SQLite 最小元数据及不可变 revision，不另建 JSON 生产仓库再迁移。M0.5 已承担快速验证目的；试压、材料和质检表按后续模块再加，不在 M1 实现全部业务表。
 
 ### M2 打样设计
 
-交付：F04/F05/F06，优先测试块，再细毛纹与头像模具。
+交付：F04/F05/F06，优先测试块，再细毛纹与头像模具。默认提供多个编号参数的小块或阵列一次导出，适应外包打样；记录配对上下模与各块参数。未确认用户拥有打印机或压机，不将现场高频试压写为前提。
 
 通过条件：Blender 往返测试通过或明确环境问题；编号测试块和候选模具可重新导入验收；细节为真实几何。导出包含近似假设与待评审项。
 
@@ -688,6 +782,29 @@ uv run --frozen pytest tests/gui
 ### M6 后续可选工程
 
 另立 ADR 与验收合同再做 FreeCAD/FEM、真实皮革本构标定、图像自动判缺、相机 SDK、机器人或数控后处理。不能因为“预留接口”就一次安装所有依赖。
+
+### 15.1 规模估计与重估规则
+
+以下是单人具备 Python/Qt 基础、使用 AI 辅助、主要投入本项目的规划工作日区间，不是承诺，也不是已测开发速度。不含用户评审等待、外包打印、采购和模型训练。实际误差可达 ±50% 或更高；M0.5 与 M1 后依据真实耗时重估。
+
+| 里程碑 | 初始工作日范围 | 主要变数 |
+|---|---:|---|
+| M0 | 2–5 | VTK/Qt 本机兼容性 |
+| M0.5 | 2–5 | 基线形体是否可接受；不含等待评审 |
+| M1 | 8–15 | 标注交互、草稿、版本与几何算法 |
+| M2 | 10–20 | 精细导出、模具几何、Blender 往返 |
+| M3 | 5–10 | 恢复、资源管理、制作记录 |
+| M4 | 8–15 | 配准、覆盖评估、质检交互 |
+| M5 | 5–10 | 工具几何与贴面限制 |
+| M6 | 单独估算 | 硬件、求解器、材料测试不确定 |
+
+M0–M3 合计约 27–55 个开发日，M0–M5 约 40–80 个开发日；可并行的少量工作不机械折算为日历交付日。优先“先软件、早验证”的既有目标：快速拿到可查看模型，再逐层完善，不承诺短期得到可售卖实物。
+
+连续两个工作日卡在同一技术点应提交最小复现与替代方案；里程碑明显超出区间要分析范围/未知项，不通过删掉验收标准制造按期完成。
+
+### 15.2 未知外部条件与默认选择
+
+打印/压机渠道和日历预算尚未获得确认。默认按外包可交付的多参数打样包设计，不依赖立刻拥有设备；不自动发单。先执行 M0.5 软件试验，用户评审与实物验证分别保留 pending；基础架构继续推进。正式 M1 使用最小 SQLite，避免重复存储实现。用户后续提供渠道或节奏约束时，只调整打样安排与优先级，不默默取消质量门。
 
 ## 16. GLM 实施交付纪律
 
@@ -718,6 +835,9 @@ uv run --frozen pytest tests/gui
 - [ ] 无网络、无 AI 权重、无 FreeCAD 可正常启动。
 - [ ] 用户照片、标注、尺寸和模型版本可保存重开。
 - [ ] 照片到浮雕全过程可查看和修改。
+- [ ] M0.5/M1 人工形体评审有结论；实物未验证事项独立列出。
+- [ ] 精细导出按实际尺寸/特征采样并通过剖面测量，不拿预览分辨率代替。
+- [ ] 草稿可恢复；CI 基础质量门与本机交互测试分别有结果。
 - [ ] 模型包含真实几何，导出尺寸正确且实体有效。
 - [ ] 测试块编号、曲线、纹理参数可追溯。
 - [ ] 上下模候选可以装配查看，适用范围和近似清楚。
@@ -735,6 +855,8 @@ uv run --frozen pytest tests/gui
 
 - Qt for Python 线程与信号示例：https://doc.qt.io/qtforpython-6/examples/example_widgets_thread_signals.html
 - PyVistaQt 嵌入 QtInteractor 与 PySide6 绑定：https://qt.pyvista.org/usage.html
+- VTK 官方 Qt 控件与 PySide6 支持：https://docs.vtk.org/en/latest/api/python/vtkmodules/vtkmodules.qt.QVTKRenderWindowInteractor.html
+- GitHub Actions 触发机制：https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
 - uv 环境变量与本地存储：https://docs.astral.sh/uv/reference/environment/
 - uv 缓存：https://docs.astral.sh/uv/concepts/cache/
 - Hugging Face 本地路径与离线变量：https://huggingface.co/docs/huggingface_hub/en/package_reference/environment_variables
@@ -749,4 +871,4 @@ uv run --frozen pytest tests/gui
 
 ---
 
-实施起点：先完成 M0 与 M1，获得一个真实可运行、可保存、可修改、可导出的小闭环；随后严格按里程碑增加能力。
+实施起点：先做 M0 与 M0.5 的环境/算法验证，再完成 M1 可保存可修改的小闭环；随后按里程碑增加能力。v1.1 修订记录见 PRD-review-response.md。
