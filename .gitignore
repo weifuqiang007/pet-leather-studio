@@ -27,6 +27,9 @@ workspace/
 experiments/relief_spike/out/**/relief_solid.stl
 experiments/relief_spike/out/_rerun_a/
 
+# 用户宠物照片（公开仓库，任何真实照片一律不进 git；副本在 workspace/ 同理被忽略）
+images/
+
 # 系统文件
 .DS_Store
 
