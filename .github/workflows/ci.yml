@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -40,4 +40,10 @@ jobs:
         run: uv run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
 
       - name: pytest（unit + architecture，无图形设备）
-        run: uv run --frozen pytest tests/unit tests/architecture -v
+        # -p no:pytest-qt：该插件加载时即 import PySide6，headless runner 上缺
+        # 系统 GL 库会导致 pytest INTERNALERROR(exit 3)。unit/architecture 测试
+        # 不用 Qt；GUI 测试按设计只在真机本地跑（见文件头注释）。
+        # QT_QPA_PLATFORM=offscreen：防任何代码路径意外创建 QApplication。
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --frozen pytest -p no:pytest-qt tests/unit tests/architecture -v
