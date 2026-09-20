@@ -1,7 +1,3 @@
-"""Pet Leather Studio：宠物皮革浮雕工作台。
+"""Local versioned master and mold candidate workbench."""
 
-本地桌面应用。M0 阶段仅包含环境管理、最小日志与架构骨架；
-GUI 与建模能力按 PRD 第 15 章里程碑逐步交付。
-"""
-
-__version__ = "0.0.1"
+__version__ = "0.1.0"

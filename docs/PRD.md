@@ -1,5 +1,7 @@
 # 宠物皮革浮雕工作台：产品需求与工程实施规范
 
+> 2026-09-20 目标修正：请先读 [参考目标纠偏](REFERENCE-TARGET-CORRECTION.md)。本文件的区域凸起建模基线与旧推进次序不再作为产品效果依据；工程规范在不冲突时继续适用。当前阶段的范围、参数与验收以 [收敛实施路径 v0.1](IMPLEMENTATION-REFOCUS-v0.1.md) 为准；下文旧里程碑不直接执行。
+
 - 文档版本：1.1
 - 修订依据：PRD-review-issues.md；逐条处置见 PRD-review-response.md
 - 日期：2026-09-18

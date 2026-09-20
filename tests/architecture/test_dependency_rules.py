@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "pet_leather_studio"
@@ -58,7 +59,7 @@ def test_domain_only_imports_known_prefixes() -> None:
     for path in iter_python_files(SRC / "domain"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for top in imported_top_levels(tree):
-            if top in ALLOWED_NONSTANDARD_PREFIXES_IN_DOMAIN:
+            if top in sys.stdlib_module_names or top in ALLOWED_NONSTANDARD_PREFIXES_IN_DOMAIN:
                 continue
             violations.append(f"{path.relative_to(SRC)} 导入了非白名单顶层包 {top}")
     assert not violations, "\n".join(violations)

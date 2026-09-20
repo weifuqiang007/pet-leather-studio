@@ -1,45 +1,48 @@
-# pet-leather-studio
+# Pet Leather Studio · 0.1.0
 
-宠物皮革浮雕工作台：照片 → 浅浮雕设计 → 3D 打印模具候选 → 皮革压制的本地桌面工具。
+目标：照片 → 精细浮雕母版 → 阴阳模 → 皮革试压。
 
-规范见 [docs/PRD.md](docs/PRD.md)（v1.1）；实施入口见
-[docs/00-GLM-START-HERE.md](docs/00-GLM-START-HERE.md)；里程碑记录见
-[docs/reports/](docs/reports/)。
+当前实现为本地 PySide6 工作台：导入已有 OBJ/STL/PLY 母版、无贴图三维查看、生成配套阴阳模候选、保留和切换数据版本。**照片自动重建尚未实现；候选模具尚未经过实物验证。**
 
-## 环境要求
+实施入口见 [GLM 阅读顺序](docs/00-GLM-START-HERE.md)，范围和参数见 [收敛实施路径](docs/IMPLEMENTATION-REFOCUS-v0.1.md)，验证记录见 [v0.1 报告](docs/reports/mold-workbench-v0.1.md)。旧区域凸起实验保留追溯，不作为目标效果。
 
-- macOS（当前验证机器：Apple M1 / 16 GB / macOS 14.2）
-- 可选：已有 Blender（用于 F04 往返；缺失不阻塞）
-
-所有依赖、Python 运行时与缓存都安装在**本仓库本地目录**（PRD 5.2）：
-`.venv/`、`.tools/`、`.cache/`，不写入全局 Python 或用户全局缓存。
-
-## 快速开始
+## 启动
 
 ```bash
-# 1. 引导本地环境（首次需联网：下载 Python 3.11 与依赖到项目本地目录）
+# 首次安装；下载保存在仓库本地目录
 python3 scripts/bootstrap.py
 
-# 2. 系统体检（写入 runtime/system_profile.json）
-scripts/dev.sh run --frozen python scripts/doctor.py
+# 打开桌面工作台；工程目录不存在时自动建立
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/my_project
 
-# 3. 质量检查与测试
+# 查看本次真实参考模型与候选（限已有此本地工程的电脑）
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/refocus_reference
+```
+
+导入浮雕主体，确认正面朝 +Z，设置宽度/深度/间隙/底板/采样和最小特征后生成。阴模单独预览默认从接触面查看。历史选择仅预览，点击激活旧版本才切换工作基线。低采样提示必须认真检查。
+
+## 命令行
+
+```bash
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/my_project import-master /absolute/path/master.obj
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/my_project generate --width 60 --depth 2 --gap 1 --backing 3 --grid 128 --feature 0.2 --accept-top-projection
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/my_project history
+scripts/dev.sh run --frozen python -m pet_leather_studio --project workspace/my_project activate REVISION_ID
+```
+
+生成目录 `workspace/<project>/revisions/<id>/` 包括两份 STL、高度数据与参数/hash 清单。数据不随 Git 提交，需另行备份。
+
+## 检查与本地依赖
+
+```bash
 scripts/dev.sh run --frozen ruff check .
 scripts/dev.sh run --frozen ruff format --check .
 scripts/dev.sh run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
-scripts/dev.sh run --frozen pytest tests/unit tests/architecture
-
-# 4. M0.5 算法自测（合成样本）
-scripts/dev.sh run --frozen python experiments/relief_spike/relief_spike.py selftest
-
-# 5. 真机渲染冒烟（会打开窗口约 6 分钟）
-scripts/run_render_smoke.sh
+scripts/dev.sh run --frozen pytest tests/unit tests/architecture tests/integration
+# 需要图形会话
+scripts/dev.sh run --frozen pytest tests/gui
 ```
 
-日常命令统一经 `scripts/dev.sh`（注入本地路径环境变量后调用项目本地 uv）。
+Python 运行时、依赖和缓存留在 `.tools/`、`.venv/`、`.cache/`。本次未新增第三方依赖或下载 AI 权重；不需要 FreeCAD。已有 Blender 可用于人工调整母版朝向。
 
-## 当前状态
-
-- M0：环境/骨架/CI/冒烟——见 [docs/reports/](docs/reports/)
-- M0.5：算法可行性短验证——管线自测 + 相似度评审（pending，待用户提供照片）
-- M1+：未开始
+旧代码标签 `baseline-before-mold-refocus-20260920`，新版标签 `mold-workbench-v0.1.0`；回退方式见实施路径第 5 节。
