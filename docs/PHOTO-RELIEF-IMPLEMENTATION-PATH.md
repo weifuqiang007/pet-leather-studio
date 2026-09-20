@@ -310,3 +310,7 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 - 蒙版仅定义有效域，不参与推理输入（manifest 记录 `mask_used_for_inference=False`）。
 - 渲染 QC 与深度输出未通过用户视觉评审；中性预览不是已完成母版。
 - `experiments/`、`workspace/`、`runtime/`、`models/` 均不入 Git；第三方只能核验代码、测试与文档，视觉与数值证据须在用户本机查看。
+
+### P1 独立验收补充（Codex，2026-09-20）
+
+已实际在本机复算并读取本地证据，结论为**需要修改后复验，P1 暂不整体验收通过**。87 项无模型测试、mypy、真实模型冒烟及样例文件 hash 通过；Ruff/格式检查未通过，GUI 联合运行有一项失败（单跑通过）。发现取消未回收推理子进程、CPU 回退设备字符串错误、样例主体蒙版不完整、主体 NaN 静默丢弃和模型版本选择不确定等问题。详见 [独立验收报告](reports/photo-relief-P1-acceptance-review.md)，按 R1–R6 修复并保留新旧证据。精细母版、参考高度和实物效果仍未通过验收。
