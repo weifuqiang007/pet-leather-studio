@@ -264,7 +264,7 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 
 ### 交付状态
 
-- Git：分支 `glm/photo-relief-p1`，提交 `93f87df`（34 文件，+3692/−12），标签 `photo-relief-p1`；未推送远端（Q4）。改动前 bundle：`runtime/backups/20260920-glm-photo-relief-p1-start.bundle`。旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。
+- Git：分支 `glm/photo-relief-p1`，首轮提交 `93f87df`（34 文件，+3692/−12）；首轮未通过独立验收（见下节），复验修复在其后的复验提交，标签 `photo-relief-p1` 已删除并重建到复验提交（`git log --decorate -1 photo-relief-p1` 可查）；未推送远端（Q4）。改动前 bundle：`runtime/backups/20260920-glm-photo-relief-p1-start.bundle`。旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。
 - Q1 落实：蒙版为人工画笔/擦除/撤销/重做/缩放 + 阈值亮度初稿，manifest 记录 `mask_method=manual|threshold_assisted`；`segment_photo` 未实现自动分割，不伪装。
 - Q2 落实：保持输入视角；manifest 记录 `depth_semantics=relative_larger_nearer` 及原生语义适配说明；姿态限制以警告写入每次 depth manifest 与界面提示。
 - Q3 落实：DA2-Small（transformers 4.57.6 实现）权重 99,175,385 字节 < 1GB（十进制，不含环境）；`.venv-photo` 实测 730.2 MB，未承诺 0.5–1GB；先 CPU 冒烟、MPS 真跑，回退须明示设备；版本冻结于 `requirements/photo-inference.lock`。
@@ -276,10 +276,10 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 1. **可复算部分（Git 内，任何评审者可验证）**：
 
    ```bash
-   git show photo-relief-p1 --stat          # 应为 93f87df、34 文件
+   git show photo-relief-p1 --stat          # 标签已重建至复验提交
    scripts/dev.sh run --frozen ruff check . # 通过
    scripts/dev.sh run --frozen pytest -p no:pytest-qt tests/unit tests/architecture tests/integration -m 'not real_model'
-   # 预期 87 passed；旧 26 项测试包含在内
+   # 预期 94 passed（复验轮新增 7 项）；旧 26 项测试包含在内
    ```
 
    代码检查点：`infrastructure/photo_inference.py` 与 `scripts/photo_inference_worker.py` 中 `local_files_only=True`（产品路径零联网）；`domain/photo_relief.py` 的 `MaskMethod` 枚举（无“AI 分割”值）；`application/mold_workbench.py` 不再写死 `source_import`。
@@ -314,3 +314,18 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 ### P1 独立验收补充（Codex，2026-09-20）
 
 已实际在本机复算并读取本地证据，结论为**需要修改后复验，P1 暂不整体验收通过**。87 项无模型测试、mypy、真实模型冒烟及样例文件 hash 通过；Ruff/格式检查未通过，GUI 联合运行有一项失败（单跑通过）。发现取消未回收推理子进程、CPU 回退设备字符串错误、样例主体蒙版不完整、主体 NaN 静默丢弃和模型版本选择不确定等问题。详见 [独立验收报告](reports/photo-relief-P1-acceptance-review.md)，按 R1–R6 修复并保留新旧证据。精细母版、参考高度和实物效果仍未通过验收。
+
+### 复验完成（GLM，2026-09-20）
+
+R1–R6 全部修复并验证；用户报告的 GUI 三视图空白同轮定位修复。详细逐项处置与证据见 `docs/reports/photo-relief-P1.md` 的"复验记录"与"PH09 复跑"两节。
+
+- R1 取消挂死：worker 独立进程组 + SIGTERM 整组回收；新增真实进程树测试。
+- R2 设备回退：计算设备与展示标签分离，MPS 失败回退 CPU 重跑并在 manifest 标注；`--device mps` 不可用时拒绝静默回退。
+- R3 蒙版：重制完整可见主体蒙版（叠加图人工核对，长毛犬全身），复跑三样例至 `workspace/photo-relief-p1/20260920-181637/`，覆盖 17.1%→56.3% / 21.3%→50.3% / 39.0%→49.5%；旧运行与证据保留。
+- R4 NaN：主体内非有限值一律拒绝发布；原始浮点 `depth_raw.npy` 随修订保存。
+- R5 版本：download 写 `selected.json`；无选择文件按 `downloaded_at` 取最新；`--revision` 全程透传 hub。
+- R6 清单退化：空列表/无权重/嵌套路径拒绝使用。
+- GUI 空白两因：PH10 证据原用 `QWidget.grab()` 抓不到 VTK OpenGL（已改 `viewer.screenshot()`，四视图重截有内容）；选中 photo 修订切视图缺数据时自动补齐同照片最新修订并注明（编辑/推理仍走严格链路）。评审提到的 GUI 联测波动本机未复现（如实记录）。
+- 复验计数：ruff/mypy 通过；无模型测试 **94**（+7）/ GUI **7**（连续两轮）/ 真实模型 2 / 评审原命令组合 8，全部通过。
+- 计数口径更正：首轮"87 项"不含 GUI 6 项，此前表述不精确；此后区分 无模型 / GUI / 真实推理 三类计数。
+- 标签 `photo-relief-p1` 重建于复验提交（本地移动、未推送）；仍待用户在纯净终端复测 GUI 并完成 `visual_review` 勾选。

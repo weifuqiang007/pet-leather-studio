@@ -104,7 +104,9 @@ def test_views_lighting_unknown_kind(qtbot, tmp_path: Path) -> None:
         window.view.setCurrentText(label)
         assert len(window.viewer.renderer.actors) > 0
         window.viewer.render()
-        window.grab().save(str(evidence / f"ph10-view-{index}-{view}.png"))  # 截图存证
+        # QWidget.grab() 抓不到 VTK 的 OpenGL 内容（会得到空白图），
+        # 证据必须用渲染窗口自身截图。
+        window.viewer.screenshot(str(evidence / f"ph10-view-{index}-{view}.png"))
         assert "预览失败" not in window.details.toPlainText()
 
     window.view.setCurrentText(VIEW_DEPTH)
@@ -122,4 +124,22 @@ def test_views_lighting_unknown_kind(qtbot, tmp_path: Path) -> None:
     window.versions.setCurrentIndex(window.versions.findData(mystery["id"]))
     assert "未知修订种类" in window.details.toPlainText()  # 不崩溃、历史不动
     assert len(store.history()) == 4
+    window.close()
+
+
+def test_view_switching_auto_uses_latest_chain(qtbot, tmp_path: Path) -> None:
+    """选中 photo 修订后切蒙版/深度/三维视图：自动补链渲染，不再空白。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    photo_id = next(row["id"] for row in store.history() if row["kind"] == "photo")
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitUntil(lambda: window.viewer.renderer is not None)
+    window.versions.setCurrentIndex(window.versions.findData(photo_id))
+
+    for label in (VIEW_MASK, VIEW_DEPTH, VIEW_3D):
+        window.view.setCurrentText(label)
+        assert len(window.viewer.renderer.actors) > 0  # 画布有内容
+        assert "预览失败" not in window.details.toPlainText()
+    assert "已用同照片最新修订预览" in window.details.toPlainText()
     window.close()

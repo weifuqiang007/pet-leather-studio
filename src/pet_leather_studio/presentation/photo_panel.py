@@ -210,6 +210,30 @@ class PhotoWorkbenchWindow(QMainWindow):
                 return row
         return None
 
+    def _latest_depth(self, photo_id: str) -> dict[str, Any] | None:
+        for row in self.service.store.history():
+            if row.get("kind") == "depth" and row.get("photo_id") == photo_id:
+                return row
+        return None
+
+    def _preview_chain(
+        self, data: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, dict | None, dict | None]:
+        """预览链：以选中修订所属照片为锚，缺失环节自动取该照片最新修订。
+
+        避免选中 photo 修订后切蒙版/深度/三维视图时画布空白无解释；
+        自动补链会在详情文本中注明，编辑/推理按钮仍走严格链路。
+        """
+        photo, mask, depth = self._chain(data)
+        if photo is not None:
+            if mask is None:
+                latest = self._latest_mask(str(photo["id"]))
+                mask = self.service.store.get(str(latest["id"])) if latest else None
+            if depth is None:
+                latest = self._latest_depth(str(photo["id"]))
+                depth = self.service.store.get(str(latest["id"])) if latest else None
+        return photo, mask, depth
+
     # ---- 显示 ----
 
     def show_selected(self):
@@ -220,7 +244,11 @@ class PhotoWorkbenchWindow(QMainWindow):
             self.viewer.reset_camera()
             return
         kind = str(data.get("kind"))
-        photo, mask, depth = self._chain(data)
+        photo, mask, depth = self._preview_chain(data)
+        strict = self._chain(data)
+        auto_filled = (mask is not None and strict[1] is None) or (
+            depth is not None and strict[2] is None
+        )
         target = self.view.currentText()
         try:
             if kind not in ("photo", "mask", "depth"):
@@ -245,7 +273,11 @@ class PhotoWorkbenchWindow(QMainWindow):
                 self._add_depth_mesh(depth)
                 message = self._depth_text(depth)
             else:
-                message = "当前视图缺少对应修订；请切到可用视图或先生成上游数据。"
+                message = "当前工程尚无该视图所需数据；请先生成蒙版或运行深度推理。"
+            if auto_filled:
+                message += (
+                    "\n（注：所选修订缺该环节，已用同照片最新修订预览；编辑/推理以所选链路为准。）"
+                )
             self.details.setPlainText(message)
             self.viewer.reset_camera()
         except (ValueError, OSError, RuntimeError) as exc:
@@ -428,9 +460,17 @@ class PhotoWorkbenchWindow(QMainWindow):
             self.job_finished(-1, QProcess.ExitStatus.CrashExit)
 
     def cancel_job(self):
-        if self.process is not None:
-            self.process.kill()
-            self.status.setText("正在取消；历史成功版本保持不变（残留暂存可用 prune-staging 清理）")  # noqa: E501
+        if self.process is None:
+            return
+        process = self.process
+        # 先 SIGTERM：CLI 收到后会整组回收推理 worker（SIGKILL 杀不到孙进程）；
+        # 5 秒未退出再兜底 SIGKILL，防止 TERM 被忽略导致任务挂死。
+        process.terminate()
+        self.status.setText("正在取消（先 TERM 再兜底 KILL）；历史成功版本保持不变")
+        QTimer.singleShot(
+            5000,
+            lambda: process.kill() if process.state() != QProcess.ProcessState.NotRunning else None,
+        )
 
     def job_finished(self, code, status):
         process = self.process

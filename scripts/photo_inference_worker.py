@@ -49,20 +49,33 @@ def cmd_infer(args: argparse.Namespace) -> int:
         mask_size = mask_image.size
     processor = AutoImageProcessor.from_pretrained(args.model, local_files_only=True)
     model = DepthAnythingForDepthEstimation.from_pretrained(args.model, local_files_only=True)
-    device = "cpu"
-    if torch.backends.mps.is_available():
-        try:
-            model = model.to("mps")
-            device = "mps"
-        except RuntimeError:
-            model = model.to("cpu")
-            device = "cpu（MPS 不可用回退）"
-    else:
-        model = model.to("cpu")
-    model.eval()
-    inputs = processor(images=image, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model(**inputs)
+
+    # 计算设备与展示标签分开：manifest 记录 device（含回退标注），
+    # 传给 torch 的始终是合法设备字符串（"cpu"/"mps"）。
+    requested = args.device
+    mps_available = torch.backends.mps.is_available()
+    if requested == "mps" and not mps_available:
+        print("--device mps 但本机 MPS 不可用；拒绝静默回退，请改用 auto 或 cpu", file=sys.stderr)
+        return 3
+    device = "mps" if requested in ("auto", "mps") and mps_available else "cpu"
+    device_label = device
+
+    def forward(dev: str):
+        local = model.to(dev)
+        local.eval()
+        inputs = processor(images=image, return_tensors="pt").to(dev)
+        with torch.no_grad():
+            return local(**inputs)
+
+    try:
+        outputs = forward(device)
+    except RuntimeError:
+        if device == "cpu":
+            raise  # CPU 路径失败即真实错误，不做无意义重试
+        print("MPS 推理失败，回退 CPU 重跑（manifest 将标注设备回退）", file=sys.stderr)
+        outputs = forward("cpu")
+        device, device_label = "cpu", "cpu（MPS 不可用回退）"
+
     predicted = outputs.predicted_depth.float()
     if predicted.ndim == 2:
         predicted = predicted.unsqueeze(0).unsqueeze(0)
@@ -86,7 +99,8 @@ def cmd_infer(args: argparse.Namespace) -> int:
         },
         "implementation": f"transformers {transformers.__version__}",
         "torch": torch.__version__,
-        "device": device,
+        "device": device_label,
+        "device_requested": requested,
         "elapsed_s": round(time.time() - started, 3),
         "semantics": "relative_larger_nearer",
         "input_size": list(image.size),
@@ -118,9 +132,10 @@ def cmd_download(args: argparse.Namespace) -> int:
         api = HfApi(endpoint=endpoint)
         try:
             try:
-                info = api.model_info(args.repo, files_metadata=True)
+                info = api.model_info(args.repo, files_metadata=True, revision=args.revision)
             except requests.exceptions.RequestException:
-                info = api.model_info(args.repo)  # blobs 元数据请求不稳定时降级
+                # blobs 元数据请求不稳定时降级为普通 model_info（仍带 revision）
+                info = api.model_info(args.repo, revision=args.revision)
         except requests.exceptions.RequestException as exc:
             last_error = exc
             print(f"元数据请求失败（{endpoint}）：{exc}", file=sys.stderr)
@@ -217,6 +232,19 @@ def cmd_download(args: argparse.Namespace) -> int:
     (revision_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    # 记录当前选中版本：locate() 优先读取，不靠 revision 目录名（提交 hash）排序猜最新
+    (args.out / "selected.json").write_text(
+        json.dumps(
+            {
+                "revision": info.sha,
+                "selected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "note": "download 时写入；ModelRegistry.locate 优先使用",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"完成：{revision_root}（实际 {total / 1e6:.2f} MB）")
     return cmd_verify(argparse.Namespace(model=str(revision_root)))
 
@@ -251,6 +279,12 @@ def parser() -> argparse.ArgumentParser:
     infer.add_argument("--mask", type=Path, required=True)
     infer.add_argument("--model", type=Path, required=True)
     infer.add_argument("--out", type=Path, required=True)
+    infer.add_argument(
+        "--device",
+        choices=["auto", "cpu", "mps"],
+        default="auto",
+        help="auto=优先 MPS 失败回退 CPU；cpu 可在 MPS 机器上复跑 CPU 基线；mps 不可用则直接报错",
+    )
     download = sub.add_parser("download")
     download.add_argument("--repo", default=DEFAULT_REPO)
     download.add_argument("--model-id", default=DEFAULT_MODEL_ID)

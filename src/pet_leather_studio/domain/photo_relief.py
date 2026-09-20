@@ -15,6 +15,8 @@ from typing import Any
 WIDTH_MM_RANGE = (5.0, 300.0)
 DEPTH_MM_RANGE = (0.05, 20.0)
 SMOOTHING_RADIUS_MM_RANGE = (0.0, 50.0)
+# 深度发布时的最小有效覆盖率（工程阈值，PH04：面积不足明确报错）
+MIN_DEPTH_VALID_COVERAGE = 0.01
 
 
 class PhotoStage(StrEnum):

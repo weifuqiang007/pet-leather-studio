@@ -61,6 +61,8 @@ CI 新增 `libgl1`/`libxkbcommon0` 安装步骤并运行 integration（排除 `r
 
 脚本 `experiments/photo_relief/run_p1_three_photos.py`；运行 `workspace/photo-relief-p1/20260920-170915/`；机器数据 `experiments/photo_relief/out/20260920-170915-report_data.json`。三张均为 MPS 设备真实 DA2-Small 推理（transformers 4.57.6），语义 `relative_larger_nearer`，预览宽 80 mm / 起伏上限 2 mm。
 
+> 注：本轮蒙版为 M0.5 局部标注（评审 R3 指出覆盖不全），已被下方"PH09 复跑"取代；本轮数据与证据原样保留。
+
 | 样本 | 输入 | 蒙版覆盖 | 深度有效覆盖 | 推理耗时 | 全程 |
 | --- | --- | --- | --- | --- | --- |
 | 短毛犬 | 148×148 | 17.1% | 17.1% | 1.62 s | 5.7 s |
@@ -78,10 +80,66 @@ CI 新增 `libgl1`/`libxkbcommon0` 安装步骤并运行 integration（排除 `r
 
 ## 本地证据（未加入 Git，重新获取仓库不会包含）
 
-- `runtime/evidence/photo-p1/ph10-view-{0..3}-*.png`：GUI 四视图截图。
-- `experiments/photo_relief/out/20260920-170915-*`：渲染、色图、高度场、机器报告。
-- `workspace/photo-relief-p1/20260920-170915/<key>/`：三个工程的修订库与原始数据。
+- `runtime/evidence/photo-p1/ph10-view-{0..3}-*.png`：GUI 四视图截图（复验轮重截，`viewer.screenshot()` 方式）。
+- `runtime/evidence/photo-p1/ph09-rerun-20260920-181637-<key>-{mask-overlay,iso}.png`：复验轮蒙版叠加核对图与斜视渲染。
+- `experiments/photo_relief/out/20260920-170915-*`、`out/20260920-181637-*`：两轮渲染、色图、高度场、机器报告。
+- `workspace/photo-relief-p1/20260920-170915/<key>/`、`20260920-181637/<key>/`：两轮工程的修订库与原始数据。
 - `runtime/backups/20260920-glm-photo-relief-p1-start.bundle`：改动前 Git bundle。
+
+## 复验记录（2026-09-20，回应第三方验收评审）
+
+背景：用户 GUI 实测"深度图/三维预览/蒙版均无画面输出"，第三方评审（`docs/reports/photo-relief-P1-acceptance-review.md`，结论"需要修改后复验"）提出 R1–R6。逐项处置：
+
+| 项 | 评审发现 | 处置 | 验证 |
+| --- | --- | --- | --- |
+| R1 取消挂死 | SIGKILL 回收不了孙进程 | worker 以 `start_new_session=True` 独立进程组启动；CLI 收 SIGTERM 先 `killpg` 整组再退出；GUI 先 TERM、5 秒未退再兜底 KILL | 新增真实进程树测试 `test_sigterm_terminates_worker_process_tree` |
+| R2 设备回退崩溃 | MPS `.to()` 失败后把标签字符串传给 torch | 计算设备与展示标签分离；MPS 失败回退 CPU 重跑并在 manifest 标注 `cpu（MPS 不可用回退）`；`--device mps` 不可用时拒绝静默回退（exit 3） | worker 代码路径 + manifest `device`/`device_requested` 字段 |
+| R3 蒙版只覆盖局部 | 三张蒙版沿用 M0.5 局部标注 | 重制完整可见主体蒙版并复跑三样例（见下节） | 叠加图人工核对 + 新 PH09 运行 |
+| R4 NaN 静默排除 | 主体内 NaN 被静默改为背景、有效域缩水 | 主体域内 NaN/Inf 一律拒绝发布（PH04），新增 1% 工程下限；原始浮点 `depth_raw.npy` 随修订保存供诊断 | `test_assemble_rejects_nan_inside_subject`、`test_assemble_rejects_tiny_coverage`、`test_assemble_preserves_raw_float_output` |
+| R5 版本选择/下载线程 | 按 hash 字典序选版、`--revision` 未透传 hub | download 写 `selected.json` 显式记录选中版本；无选择文件时按 `downloaded_at` 取最新；`model_info`/`snapshot_download` 全程透传 revision | `test_registry_prefers_selected_then_download_time`、`test_download_threads_revision_to_hub` |
+| R6 清单退化绕过 | 空文件列表/无权重/嵌套路径清单可用 | 清单为空、缺 `.safetensors`、含非顶层路径均拒绝使用 | `test_registry_verify_rejects_degenerate_manifests` |
+
+GUI 三视图空白的定位与修复：
+
+1. 证据截图方式错误：PH10 截图原用 `QWidget.grab()`，抓不到 VTK 的 OpenGL 内容（得到空白 PNG），此前的"空白"证据不代表 GUI 画布空白。已改用 `viewer.screenshot()` 重截，四视图均含渲染内容（非背景像素占比 29.4%）。
+2. 视图切换空白陷阱：选中 photo 修订后切蒙版/深度/三维视图时，严格链路缺数据 → 画布空白且无解释。预览链改为自动补齐同照片最新修订，详情注明"（注：所选修订缺该环节，已用同照片最新修订预览；编辑/推理以所选链路为准。）"；编辑/推理按钮仍走严格链路。新增 `test_view_switching_auto_uses_latest_chain`。
+
+另：请在纯净终端（先 `conda deactivate`）复测 GUI；若 conda base 环境干扰 Qt/VTK 插件加载导致仍空白，属环境问题而非本轮代码，需单独排查。
+
+复验测试计数（本机 macOS arm64）：ruff check / format 通过；mypy 8 文件通过；`tests/unit tests/architecture tests/integration -m 'not real_model'` **94 项通过**（上轮 87 + 新增 7）；`tests/gui` **7 项通过**（连续两轮）；真实模型 2 项通过；按评审原命令的 GUI+integration 组合 8 项通过。
+
+计数口径更正：上轮"87 项"不含 GUI 6 项，表述不精确；本轮起区分——无模型测试 94 / GUI 7 / 真实推理 2。
+
+评审提到的 GUI 联测波动（`test_workbench_generate_and_restore` history 1≠2）在修复后**本机未复现**（该组合连续两轮 7 项通过、按评审原命令 8 项通过）；不否认对方环境观察到，仅如实记录未复现。
+
+## PH09 复跑（R3：完整主体蒙版）
+
+蒙版重制：`experiments/photo_relief/run_p1_three_photos.py` 内联 `FULL_SUBJECT_POLYGONS`（AI 辅助定位轮廓 + `mask-overlay.png` 红色半透明叠加图人工核对；坐标定义于原图像素系、按工作图尺寸等比缩放）。M0.5 旧标注文件原样保留但不再引用；旧运行 `20260920-170915/` 与旧 out/ 目录未改动。
+
+新运行 `workspace/photo-relief-p1/20260920-181637/`，机器数据 `experiments/photo_relief/out/20260920-181637-report_data.json`（MPS 真实推理，语义与预览参数同上轮）：
+
+| 样本（蒙版口径） | 蒙版覆盖（旧→新） | 深度有效覆盖 | 推理耗时 | 全程 |
+| --- | --- | --- | --- | --- |
+| 短毛犬（头 + 可见上身） | 17.1% → 56.3% | 56.3% | 2.20 s | 11.5 s |
+| 猫（双耳 + 面部 + 身体） | 21.3% → 50.3% | 50.3% | 2.55 s | 11.1 s |
+| 长毛犬（全身，含尾巴） | 39.0% → 49.5% | 49.5% | 0.98 s | 8.4 s |
+
+逐张错误归因（区分蒙版错误 / 深度错误 / 低分辨率限制）：
+
+- 短毛犬：蒙版完整（头/耳/口鼻/上身，叠加图核对）；深度前后关系正确（鼻/头高于远侧）；起伏柔和属 148 px 低分辨率限制，非蒙版或深度错误。
+- 猫：蒙版完整（双耳+面部+身体）；底边阶梯源于主体在原图底边被裁切（画面内容至此为止，非蒙版错误）；浮雕偏浅属浅色毛发 + 低分辨率限制；左下角水印部分落在蒙版边缘内，可能带来轻微伪起伏（photo manifest 早已警告水印）。
+- 长毛犬：全身保留（头、躯干、四肢、尾巴整体轮廓，叠加图核对）；毛流纹理不可辨属模型粒度 + 低分辨率限制；未见整体正反颠倒。
+
+叠加图与斜视渲染证据：`runtime/evidence/photo-p1/ph09-rerun-20260920-181637-<key>-{mask-overlay,iso}.png`。视觉评审仍为 pending，最终以用户在 GUI 中勾选为准。
+
+## 用户复测指引（GUI）
+
+```bash
+conda deactivate   # 避免 base 环境干扰 Qt/VTK
+scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260920-181637/short_hair_dog photo
+```
+
+注意 `--project` 必须在子命令 `photo` 之前。窗口内切换 原图/蒙版/深度图/三维中性预览 四视图；选中 photo 修订切其他视图会自动用同照片最新修订预览并在详情注明。
 
 ## 未实现与限制
 
@@ -92,4 +150,4 @@ CI 新增 `libgl1`/`libxkbcommon0` 安装步骤并运行 integration（排除 `r
 
 ## 版本及回退
 
-旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。新标签 `photo-relief-p1` 固定本轮代码；改动前状态另存 Git bundle（见上）。按约定本轮不推送远端。
+旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。标签 `photo-relief-p1` 原指向首轮交付提交（未通过验收），复验修复完成后删除并在复验提交上重建（标签未推送远端，移动仅影响本地）；改动前状态另存 Git bundle（见上）。按约定本轮不推送远端。

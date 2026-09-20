@@ -4,7 +4,7 @@
 报告须注明是否实际运行。产品代码路径本身不依赖本文件。
 """
 
-import sys
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -69,20 +69,18 @@ def test_real_depth_inference_runs(synthetic_project: Path) -> None:
 
 @pytest.mark.skipif(not _model_installed(), reason="模型未安装（先运行 setup_photo_models.py）")
 def test_worker_rejects_corrupt_model(synthetic_project: Path, tmp_path: Path) -> None:
+    """损坏权重必须被 hash 校验拒绝；在临时副本上测试，不动正式权重。"""
     from pet_leather_studio.bootstrap import environment
     from pet_leather_studio.domain.errors import ResourceMissingError
     from pet_leather_studio.infrastructure.photo_inference import ModelRegistry
 
-    registry = ModelRegistry(environment.app_root() / "models")
-    model_dir = registry.locate(None)
-    weights = model_dir / "model.safetensors"
-    backup = tmp_path / "model.safetensors"
-    backup.write_bytes(weights.read_bytes())
-    try:
-        with weights.open("ab") as stream:
-            stream.write(b"\x00corrupt")
-        with pytest.raises(ResourceMissingError, match="hash 不匹配"):
-            registry.locate(None)
-    finally:
-        weights.write_bytes(backup.read_bytes())
-    registry.locate(None)  # 恢复后可再次通过校验
+    real = ModelRegistry(environment.app_root() / "models").locate(None)
+    fake_root = tmp_path / "models"
+    target = fake_root / "hf" / real.parent.name / real.name
+    target.parent.mkdir(parents=True)
+    shutil.copytree(real, target)
+    weights = target / "model.safetensors"
+    with weights.open("ab") as stream:
+        stream.write(b"\x00corrupt")
+    with pytest.raises(ResourceMissingError, match="hash 不匹配"):
+        ModelRegistry(fake_root).locate(None)

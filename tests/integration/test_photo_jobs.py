@@ -1,6 +1,9 @@
 """PH08：失败/崩溃不留成功修订、active 不回退、可重跑；残留 staging 显式清理。"""
 
 import os
+import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -81,3 +84,81 @@ def test_prune_staging_removes_only_stale_residue(tmp_path: Path) -> None:
     recent = store.root / "staging" / "just-now"
     recent.mkdir()
     assert store.prune_staging(min_age_hours=1.0) == []  # 未到时限不清理
+
+
+@pytest.mark.skipif(os.name != "posix", reason="进程组回收仅在 POSIX 验证")
+def test_sigterm_terminates_worker_process_tree(tmp_path: Path) -> None:
+    """R1：父进程（CLI）收到 SIGTERM 必须整组回收推理 worker，不留孤儿子进程。"""
+    root = Path(__file__).resolve().parents[2]
+    stub_worker = tmp_path / "sleepy_worker.py"
+    stub_worker.write_text(
+        textwrap.dedent(
+            """
+            import os, sys, time
+            out = sys.argv[sys.argv.index("--out") + 1]
+            with open(os.path.join(out, "pid.txt"), "w") as stream:
+                stream.write(str(os.getpid()))
+            time.sleep(60)
+            """
+        ),
+        encoding="utf-8",
+    )
+    harness = tmp_path / "harness.py"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, {str(root / "src")!r})
+            from pet_leather_studio.infrastructure.photo_inference import DepthWorker
+
+            python, stub, image, mask, model, out = sys.argv[1:7]
+            DepthWorker(Path(python), Path(stub)).run(
+                Path(image), Path(mask), Path(model), Path(out)
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "worker-out"
+
+    harness_proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(harness),
+            sys.executable,
+            str(stub_worker),
+            str(tmp_path / "image.png"),
+            str(tmp_path / "mask.png"),
+            str(tmp_path / "model"),
+            str(out_dir),
+        ]
+    )
+    try:
+        pid_file = out_dir / "pid.txt"
+        deadline = time.time() + 15
+        while not pid_file.is_file():
+            assert time.time() < deadline, "worker 未在时限内启动"
+            if harness_proc.poll() is not None:
+                pytest.fail("harness 提前退出")
+            time.sleep(0.05)
+        worker_pid = int(pid_file.read_text().strip())
+        os.kill(worker_pid, 0)  # worker 存活
+
+        harness_proc.terminate()  # SIGTERM，等同 GUI 取消路径
+        assert harness_proc.wait(timeout=15) != 0
+
+        gone = False
+        for _ in range(100):
+            try:
+                os.kill(worker_pid, 0)
+                time.sleep(0.1)
+            except ProcessLookupError:
+                gone = True
+                break
+        assert gone, "推理 worker 未随父进程 SIGTERM 退出（进程树泄漏）"
+    finally:
+        if harness_proc.poll() is None:
+            harness_proc.kill()
+            harness_proc.wait(timeout=10)

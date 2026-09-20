@@ -2,12 +2,14 @@
 """PH09：三张真实照片走完整 P1 管线（导入→人工蒙版→真实深度→离屏渲染）。
 
 运行（真机、需已安装模型）：
-    scripts/dev.sh run --frozen python experiments/photo_relief/run_p1_three_photos.py [--only 短毛犬]
+    scripts/dev.sh run --frozen python experiments/photo_relief/run_p1_three_photos.py
+    （可选 --only 短毛犬 / 猫 / 长毛犬）
 
 要点：
 - 每张照片使用全新工程目录（时间戳后缀，绝不覆盖既有数据）；
-- 蒙版 = workspace/annotations/photo_*.json 全部区域多边形并集填充
-  （该标注为 M0.5 期间 AI 辅助定位 + 人工核对的产物，manifest notes 如实记录）；
+- 蒙版 = FULL_SUBJECT_POLYGONS 完整可见主体多边形（P1 复验 R3 重制：AI 辅助
+  定位轮廓 + 原图叠加图人工核对；长毛犬保留全身）。M0.5 旧标注文件原样保留、不再引用；
+- 每张输出 mask-overlay.png（红半透明蒙版叠加原图，4× 放大）供人工核对蒙版边界；
 - 深度走 .venv-photo 隔离进程的真实 DA2-Small（MPS 优先，回退 CPU）；
 - 渲染为离屏 pyvista（正/侧/斜 × 三点光组/头部单光源）+ 深度色图；
 - 输出 experiments/photo_relief/out/<key>/（gitignored），含 report_data.json。
@@ -57,13 +59,87 @@ _COLORMAP_ANCHORS = np.array(
 )
 
 
-def mask_from_annotations(annotation: dict[str, Any]) -> np.ndarray:
-    width, height = annotation["image_size_px"]
+# P1 复验（R3）：覆盖完整可见主体的蒙版多边形（原图像素坐标，左上原点）。
+# 来源：AI 辅助定位主体轮廓 + mask-overlay.png 叠加图人工核对；
+# 取代 M0.5 局部标注（workspace/annotations/photo_*.json 原样保留、不再引用）。
+FULL_SUBJECT_POLYGONS: dict[str, list[tuple[int, int]]] = {
+    # 头部 + 可见上身（正面偏侧，胸口在画面底边被裁切）
+    "short_hair_dog": [
+        (58, 10),
+        (88, 12),
+        (105, 30),
+        (120, 48),
+        (125, 72),
+        (122, 95),
+        (128, 120),
+        (125, 148),
+        (25, 148),
+        (22, 118),
+        (28, 92),
+        (24, 68),
+        (28, 48),
+        (42, 28),
+    ],
+    # 双耳 + 面部 + 身体（正面，胸部/前腿在底边被裁切；左下角有水印）
+    "cat": [
+        (28, 148),
+        (18, 118),
+        (34, 60),
+        (44, 28),
+        (58, 4),
+        (78, 8),
+        (94, 26),
+        (114, 32),
+        (120, 18),
+        (136, 30),
+        (132, 58),
+        (112, 74),
+        (104, 96),
+        (94, 148),
+    ],
+    # 全身（趴卧姿态：头、垂耳、躯干、四肢、尾巴整体轮廓）
+    "long_hair_dog": [
+        (8, 95),
+        (10, 118),
+        (18, 133),
+        (40, 138),
+        (60, 128),
+        (85, 140),
+        (120, 142),
+        (150, 138),
+        (168, 130),
+        (175, 112),
+        (172, 95),
+        (168, 78),
+        (150, 45),
+        (120, 22),
+        (85, 18),
+        (55, 45),
+    ],
+}
+
+
+def full_subject_mask(key: str, photo_manifest: dict[str, Any]) -> np.ndarray:
+    """多边形坐标定义于原图像素系；按工作图尺寸等比缩放后填充为蒙版。"""
+    width, height = int(photo_manifest["work_width_px"]), int(photo_manifest["work_height_px"])
+    scale_x = width / int(photo_manifest["width_px"])
+    scale_y = height / int(photo_manifest["height_px"])
+    polygon = [(round(x * scale_x), round(y * scale_y)) for x, y in FULL_SUBJECT_POLYGONS[key]]
     mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
-    for region in annotation["regions"]:
-        draw.polygon([tuple(point) for point in region["polygon"]], fill=255)
+    ImageDraw.Draw(mask).polygon(polygon, fill=255)
     return np.asarray(mask, dtype=np.uint8)
+
+
+def save_mask_overlay(work_png: Path, mask_arr: np.ndarray, out_png: Path) -> None:
+    """红色半透明蒙版叠加原图并 4× 放大，供人工核对蒙版边界（R3）。"""
+    with Image.open(work_png) as image:
+        base = image.convert("RGBA").resize(
+            (mask_arr.shape[1] * 4, mask_arr.shape[0] * 4), Image.NEAREST
+        )
+    red = Image.new("RGBA", base.size, (255, 48, 48, 110))
+    mask_up = Image.fromarray(mask_arr, mode="L").resize(base.size, Image.NEAREST)
+    base.paste(red, (0, 0), mask_up)
+    base.save(out_png)
 
 
 def depth_colormap_png(depth: np.ndarray, valid: np.ndarray, path: Path) -> None:
@@ -79,9 +155,7 @@ def depth_colormap_png(depth: np.ndarray, valid: np.ndarray, path: Path) -> None
 def render_views(heights_mm: np.ndarray, out_dir: Path, key: str) -> list[str]:
     ny, nx = heights_mm.shape
     height_mm = PREVIEW_WIDTH_MM * ny / nx
-    xx, yy = np.meshgrid(
-        np.linspace(0.0, PREVIEW_WIDTH_MM, nx), np.linspace(0.0, height_mm, ny)
-    )
+    xx, yy = np.meshgrid(np.linspace(0.0, PREVIEW_WIDTH_MM, nx), np.linspace(0.0, height_mm, ny))
     grid = pv.StructuredGrid(xx, yy, heights_mm)
     shots: list[str] = []
     for view_name, method in (("front", "view_xy"), ("side", "view_xz"), ("iso", "view_isometric")):
@@ -107,9 +181,6 @@ def run_one(key_cn: str, key: str, run_root: Path) -> dict[str, Any]:
     project = run_root / key
     service = create_photo_workbench(project)
     source = ROOT / "images" / f"{key_cn}.jpeg"
-    annotation = json.loads(
-        (ROOT / "workspace" / "annotations" / f"photo_{key}.json").read_text(encoding="utf-8")
-    )
     out_dir = OUT / f"{run_root.name}-{key}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,19 +188,24 @@ def run_one(key_cn: str, key: str, run_root: Path) -> dict[str, Any]:
     photo = service.import_photo(source)
     photo_manifest = service.store.get(photo.revision_id)
 
-    mask_arr = mask_from_annotations(annotation)
+    mask_arr = full_subject_mask(key, photo_manifest)
     mask_png = out_dir / "mask.png"
     Image.fromarray(mask_arr, mode="L").save(mask_png)
-    Image.fromarray(mask_arr, mode="L").resize(
-        (mask_arr.shape[1] * 4, mask_arr.shape[0] * 4)
-    ).save(out_dir / "mask-preview.png")
+    Image.fromarray(mask_arr, mode="L").resize((mask_arr.shape[1] * 4, mask_arr.shape[0] * 4)).save(
+        out_dir / "mask-preview.png"
+    )
+    save_mask_overlay(
+        service.store.directory(photo.revision_id) / "work.png",
+        mask_arr,
+        out_dir / "mask-overlay.png",
+    )
     mask = service.save_mask(
         photo.revision_id,
         mask_png,
         MaskMethod.MANUAL,
         notes=(
-            "操作员蒙版（M0.5 标注多边形并集填充：AI 辅助定位 + 人工核对；"
-            "P1 交付口径为人工蒙版）"
+            "P1 复验蒙版（R3）：完整可见主体多边形，AI 辅助定位轮廓 + 叠加图人工核对；"
+            "长毛犬保留全身；M0.5 旧标注文件保留但不再引用"
         ),
     )
 
@@ -165,6 +241,7 @@ def run_one(key_cn: str, key: str, run_root: Path) -> dict[str, Any]:
         "preview_depth_mm": PREVIEW_DEPTH_MM,
         "elapsed_total_s": elapsed_total,
         "renders": shots,
+        "mask_overlay": str(out_dir / "mask-overlay.png"),
         "colormap": str(out_dir / f"{key}-depth-colormap.png"),
         "heightfield_npz": str(out_dir / f"{key}-heightfield.npz"),
     }
@@ -194,9 +271,7 @@ def main() -> int:
         "results": rows,
     }
     report_path = OUT / f"{run_root.name}-report_data.json"
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"report": str(report_path), "photos": len(rows)}, ensure_ascii=False))
     return 0
 
