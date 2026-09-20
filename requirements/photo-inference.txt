@@ -1,0 +1,9 @@
+# 照片推理隔离环境（.venv-photo，由 scripts/setup_photo_models.py bootstrap 安装）。
+# macOS arm64 的 PyPI torch 轮子为 CPU 版；不安装 CUDA 相关包。
+# 精确锁定版本见 requirements/photo-inference.lock（bootstrap 后 freeze 生成）。
+torch>=2.2,<3
+transformers>=4.45,<5
+pillow>=10
+numpy>=1.26,<3
+safetensors>=0.4
+huggingface_hub>=0.24

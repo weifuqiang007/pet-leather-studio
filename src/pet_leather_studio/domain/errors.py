@@ -42,3 +42,9 @@ class JobCancelledError(PetLeatherError):
 
 class ScanCoverageLowError(PetLeatherError):
     code = "SCAN_COVERAGE_LOW"
+
+
+class UnsupportedOperationError(PetLeatherError):
+    """能力未配置/未实现时显式拒绝，不允许以占位结果冒充成功。"""
+
+    code = "UNSUPPORTED_OPERATION"

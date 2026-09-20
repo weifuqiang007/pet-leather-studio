@@ -142,18 +142,20 @@ class WorkbenchWindow(QMainWindow):
         try:
             data = self.service.store.get(revision_id)
             folder = self.service.store.directory(revision_id)
+            kind = str(data.get("kind"))
             self.viewer.clear()
             self.viewer.enable_lightkit()
-            if data["kind"] == "master":
+            if kind == "master":
                 self.viewer.add_mesh(
                     pv.read(folder / "preview.vtp"), color="ivory", smooth_shading=True
                 )
                 message = (
                     f"导入母版：{data['source_name']}\n"
                     f"原网格三角形：{data['triangles']:,}\n预览为降采样；生成使用完整母版。\n"
-                    "单位未确认；生成时通过目标宽度定义尺度。\n此版本不是照片重建结果。"
+                    "单位未确认；生成时通过目标宽度定义尺度。\n"
+                    f"来源：{data.get('input_method', 'source_import')}"
                 )
-            else:
+            elif kind == "mold":
                 mode = self.mode.currentIndex()
                 for name, color, visible in (
                     ("male", "#dcbb84", mode != 2),
@@ -171,14 +173,47 @@ class WorkbenchWindow(QMainWindow):
                     f"候选模具 · {data['nx']}×{data['ny']}\n"
                     f"网格间距 {data['dx_mm']:.3f} / {data['dy_mm']:.3f} mm\n"
                     f"覆盖率 {data['coverage']:.1%}\n"
+                    f"来源：{data.get('input_method', '未知')}"
+                    f"（master {str(data.get('master_id', ''))[:8]}）\n"
                     f"采样初筛：{'初筛通过，需验细节' if data['sampling_sufficient'] else '不足'}\n"
                     + "\n".join(data["warnings"])
                 )
+            elif kind in ("photo", "mask", "depth"):
+                # 照片链修订在照片工作台（python -m pet_leather_studio photo）查看；
+                # 此处给出摘要，避免误当模具预览。
+                message = self._photo_chain_summary(kind, data)
+            else:
+                message = (
+                    f"未知修订种类 {kind!r}（可能来自更新版本的数据）。\n"
+                    "已跳过预览；文件与历史保持不变。"
+                )
             self.details.setPlainText(message)
-            self.viewer.view_xy(negative=data["kind"] == "mold" and self.mode.currentIndex() == 2)
+            self.viewer.view_xy(negative=kind == "mold" and self.mode.currentIndex() == 2)
             self.viewer.reset_camera()
         except (ValueError, OSError, RuntimeError) as exc:
             self.details.setPlainText(f"预览失败：{exc}")
+
+    @staticmethod
+    def _photo_chain_summary(kind: str, data: dict) -> str:
+        if kind == "photo":
+            return (
+                f"照片修订 · {data.get('source_name')}\n"
+                f"原始 {data.get('width_px')}×{data.get('height_px')}px → "
+                f"工作 {data.get('work_width_px')}×{data.get('work_height_px')}px\n"
+                "请在照片工作台（python -m pet_leather_studio photo）查看与编辑。\n"
+                + "\n".join(data.get("warnings", []))
+            )
+        if kind == "mask":
+            return (
+                f"蒙版修订 · {data.get('mask_method')}\n"
+                f"覆盖率 {data.get('coverage', 0):.1%}；"
+                f"对应照片 {str(data.get('photo_id', ''))[:8]}"
+            )
+        return (
+            f"深度修订 · {data.get('depth_semantics')}\n"
+            f"设备 {data.get('runtime', {}).get('device')}；"
+            f"有效覆盖 {data.get('valid_coverage', 0):.1%}\n" + "\n".join(data.get("warnings", []))
+        )
 
     def import_master(self):
         name, _ = QFileDialog.getOpenFileName(

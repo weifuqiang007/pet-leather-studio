@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,6 +102,24 @@ class RevisionStore:
                 raise ValueError("版本文件名不能包含路径")
             if file_hash(self.directory(revision_id) / name) != expected["sha256"]:
                 raise ValueError(f"版本文件已变化，拒绝使用：{name}")
+
+    def prune_staging(self, min_age_hours: float = 1.0) -> list[str]:
+        """显式清理崩溃残留的 staging 目录。
+
+        仅在成功取得写锁（无其他任务运行）时执行，只动 staging，
+        不触碰 revisions 历史与用户数据；返回被清理的目录名。
+        """
+        self.lock.acquire()
+        try:
+            cutoff = time.time() - min_age_hours * 3600
+            removed: list[str] = []
+            for entry in (self.root / "staging").iterdir():
+                if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed.append(entry.name)
+            return removed
+        finally:
+            self.lock.release()
 
     def activate(self, revision_id: str) -> None:
         self.lock.acquire()

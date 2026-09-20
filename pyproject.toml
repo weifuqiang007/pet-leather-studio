@@ -62,3 +62,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "real_model: 需要已安装的真实模型权重（仅真机运行；缺权重时 skip，报告须注明）",
+]

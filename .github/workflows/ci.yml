@@ -27,6 +27,9 @@ jobs:
       - name: Install Python 3.11
         run: uv python install 3.11
 
+      - name: Install headless GL libs（VTK 导入需要；本轮未推送远端验证）
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0
+
       - name: Sync frozen dependencies（含 dev 组）
         run: uv sync --frozen --python 3.11 --extra dev
 
@@ -39,11 +42,13 @@ jobs:
       - name: mypy（domain/application）
         run: uv run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
 
-      - name: pytest（unit + architecture，无图形设备）
+      - name: pytest（unit + architecture + integration，无图形设备/权重）
         # -p no:pytest-qt：该插件加载时即 import PySide6，headless runner 上缺
-        # 系统 GL 库会导致 pytest INTERNALERROR(exit 3)。unit/architecture 测试
-        # 不用 Qt；GUI 测试按设计只在真机本地跑（见文件头注释）。
+        # 系统 GL 库会导致 pytest INTERNALERROR(exit 3)。unit/architecture/integration
+        # 测试不用 Qt；GUI 与 real_model 测试按设计只在真机本地跑（见文件头注释）。
         # QT_QPA_PLATFORM=offscreen：防任何代码路径意外创建 QApplication。
         env:
           QT_QPA_PLATFORM: offscreen
-        run: uv run --frozen pytest -p no:pytest-qt tests/unit tests/architecture -v
+        run: >-
+          uv run --frozen pytest -p no:pytest-qt tests/unit tests/architecture
+          tests/integration -m 'not real_model' -v

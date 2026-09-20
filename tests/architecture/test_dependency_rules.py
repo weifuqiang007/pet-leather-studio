@@ -74,3 +74,56 @@ def test_no_blanket_except_in_src() -> None:
             if isinstance(node, ast.ExceptHandler) and node.type is None:
                 violations.append(f"{path.relative_to(SRC)}:{node.lineno} 裸 except")
     assert not violations, "\n".join(violations)
+
+
+def imported_module_names(tree: ast.AST) -> set[tuple[str, ...]]:
+    """返回 (顶层包, 完整模块路径) 集合，用于分层方向检查。"""
+    names: set[tuple[str, ...]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add((alias.name.split(".")[0], alias.name))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add((node.module.split(".")[0], node.module))
+    return names
+
+
+def test_no_reverse_layer_dependencies() -> None:
+    """照片管线分层（实施路径文档）：禁止层反向依赖。
+
+    - domain：只允许标准库与 pet_leather_studio.domain；
+    - application：不得导入 infrastructure/presentation/algorithms；
+    - presentation：不得导入推理库（torch/transformers/huggingface_hub）。
+    """
+    violations: list[str] = []
+
+    for path in iter_python_files(SRC / "domain"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for _top, module in imported_module_names(tree):
+            if _top in sys.stdlib_module_names or _top == "__future__":
+                continue
+            if module == "pet_leather_studio" or module.startswith("pet_leather_studio.domain"):
+                continue
+            violations.append(
+                f"{path.relative_to(SRC)} 导入了 {module}（domain 只允许标准库与 domain 内部）"
+            )
+
+    for path in iter_python_files(SRC / "application"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for _top, module in imported_module_names(tree):
+            forbidden = ("pet_leather_studio.infrastructure", "pet_leather_studio.presentation")
+            if module.startswith(forbidden):
+                violations.append(f"{path.relative_to(SRC)} 反向导入 {module}")
+            elif module == "pet_leather_studio.algorithms" or module.startswith(
+                "pet_leather_studio.algorithms."
+            ):
+                violations.append(f"{path.relative_to(SRC)} 导入了算法层 {module}（应由端口承接）")
+
+    inference_tops = ("torch", "transformers", "huggingface_hub")
+    for path in iter_python_files(SRC / "presentation"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for top, module in imported_module_names(tree):
+            if top in inference_tops:
+                violations.append(f"{path.relative_to(SRC)} 直接导入了推理库 {module}")
+
+    assert not violations, "分层反向依赖：\n" + "\n".join(violations)
