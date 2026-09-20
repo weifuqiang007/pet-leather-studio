@@ -170,3 +170,38 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 可直接给 GLM：
 
 > 按 docs/PHOTO-RELIEF-IMPLEMENTATION-PATH.md 开发，先检查当前代码与已有版本，完成 P1 的本地真实推理闭环，逐步推进 P2；不要一次扩展所有后续功能。严格遵守代码分层、输入来源、坐标/高度协议、本地依赖和 PH 验收条件。现有三张小图只验收分割与粗形体，不能宣称细毛重建。保留 OBJ 导入、阴阳模和版本回退；修复旧 master/mold 分派及 source_import 写死的集成接缝。提供真实模型运行证据与未通过项，禁止用鼓包、贴图或模拟推理冒充完成。
+
+## 评审记录与待答复疑问（GLM，2026-09-20）
+
+评审人：GLM。已按本文要求先读 IMPLEMENTATION-REFOCUS-v0.1.md、REFERENCE-TARGET-CORRECTION.md、reports/mold-workbench-v0.1.md，并对照实际代码逐条核实。结论：文档与代码现状相符、可实施，无阻塞性矛盾；下列 4 项为开工前需要确认的范围/策略选择，均已给出建议默认，逐条答复或统一"按默认继续"即可开工。
+
+### 已核实的文档声明（对照代码/数据）
+
+- `presentation/workbench.py` 的版本预览分派确为"kind==master 否则一律按 male/female STL 处理"，引入 photo/mask/depth 修订后须改为显式分派——本文"必须修改"项属实。
+- `application/mold_workbench.py` 的 `generate()` 确把模具 `input_method` 写死为 `source_import`——本文"去掉写死假设"项属实。
+- `infrastructure/revisions.py` 的 `publish()` 只对 staging **顶层文件**建 hash 清单，嵌套目录不入清单——本文"扁平布局"约束有必要性依据。
+- 参数范围、grid_size 32–512 限额与 `domain/molds.py` 一致；标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 存在。
+- 现有测试 26 项（unit/architecture/integration 25 + GUI 1）；`pyproject.toml` 尚无 markers 注册，`real_model` 需按本文新增。
+- "14.93% 包围盒比例"对应 `runtime/reference_inspection/stats.json` 中 SubTool3 的 Z 跨度/X 跨度（2.878/19.283）；"不得暗用"有据。
+- `.gitignore` 现无 `.venv-photo/`、`requirements/` 忽略项，本文"补齐"成立（注意 `requirements/photo-inference.lock` 按本文应提交，忽略项须排除它）。
+
+### 待答复疑问
+
+**Q1（P1 蒙版范围）**：P1 交付列"蒙版"，PH09 的"真实模型"是否专指深度模型，允许 P1 以人工画笔蒙版（含阈值/亮度初筛，不引入分割权重）为基线？自动分割模型（需再下载一个权重）留待 P2 前独立筛选实验。
+建议默认：是——P1 人工蒙版为验收基线，自动分割不阻塞 P1。
+
+**Q2（深度语义与姿态限制）**：单目相对深度=相机视线深度。趴卧/侧躺样本（长毛犬）直接压扁会把"身体厚度"映射为浮雕高度，与"正面肖像浮雕"的直觉不同。P1 是否明确限定：深度语义仅为相机视线深度，姿态不限但逐张如实记录该限制（近正面肖像照效果最佳），视角归一化/姿态重投影不在 P1 范围？
+建议默认：是——P1 相机深度为唯一模式，UI 与报告显式标注限制；重投影留 P2+。
+
+**Q3（首个深度基线候选与体积上限）**：本机 Apple silicon、CPU/MPS、16GB 内存。建议第一候选 Depth Anything V2 Small（约 25M 参数、权重约 100MB 级；注意：其许可为 **Apache-2.0** 而非 MIT，是该系列唯一宽松许可档，Base/Large/Giant 为 CC-BY-NC-4.0 不可作默认产品模型）。是否认可以 DA2-Small 为第一基线（以本地兼容性、许可、输出协议筛查通过为前提，不合格再比第二条路线），并设模型权重体积上限 1GB？附带确认：`.venv-photo/` 含 CPU 版 torch 等总磁盘占用约 0.5–1GB，全部项目本地。
+建议默认：认可 DA2-Small 为第一候选、上限 1GB。
+
+**Q4（推送策略）**：本文要求"不自动推送或覆盖远程历史"；但项目既有惯例是阶段成果推 GitHub 触发 CI，且 `codex/mold-refocus-v0.1` 的 3 个提交（含本文）目前**仅存在本地**，远程 `origin/main` 停在 dc943ad——本地磁盘故障会丢失 refocus 全部文档。P1 开工时是否随开发分支一并推送 `glm/photo-relief-p1`（仅新增远端分支，不动 main、不改历史）？
+建议默认：推送新分支；main 保持不动。
+
+### 评审默认处理（如无异议按此执行，不另开问题）
+
+- CI 工作流同步纳入 `tests/integration`（保持 `-p no:pytest-qt`，PH 系列按 headless 可跑设计）；`tests/gui` 与 `real_model` 仍仅真机。
+- master/mold 分派与 `source_import` 接缝修复与 photo 修订引入同分支完成，以 PH07 验收，不单独开分支。
+- reference_ratio 所需"有效参考起伏"以分位数裁剪等显式口径记录，不使用包围盒 Z 跨度（14.93% 仅作历史对照数字保留）。
+
