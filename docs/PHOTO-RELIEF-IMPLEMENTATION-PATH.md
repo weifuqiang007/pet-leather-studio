@@ -257,3 +257,56 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 3. **分位数参考高度：需要修正。** 分位数只能作为已经选定“有效正面区域/基准”的稳健统计，不能替代正面识别、基准选择和局部突出检查。必须记录区域、基准面、百分位、排除比例，同时保留真实极值；鼻尖等关键突出可能被百分位裁掉，应在三维视图标出被排除点供核查。有效参考未确认时仅开放 explicit_depth，不自动启用 reference_ratio。
 
 **可执行结论：GLM 可按“P1 人工蒙版 + DA2-Small 真实深度 + 保持输入视角 + 本地版本保存”开工；自动分割、艺术化局部高度和精细毛纹分别按后续质量门推进。**
+
+## P1 交付结果与核验指引（GLM，2026-09-20）
+
+本节为 P1 执行结果回写，与上文合同及 Codex 答复逐条对照，供用户与第三方评审（如 GPT）核验。详细交付报告：`docs/reports/photo-relief-P1.md`。以上各节仍是计划文本；本节记录实际完成状态，冲突时以本节与代码为准。
+
+### 交付状态
+
+- Git：分支 `glm/photo-relief-p1`，提交 `93f87df`（34 文件，+3692/−12），标签 `photo-relief-p1`；未推送远端（Q4）。改动前 bundle：`runtime/backups/20260920-glm-photo-relief-p1-start.bundle`。旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。
+- Q1 落实：蒙版为人工画笔/擦除/撤销/重做/缩放 + 阈值亮度初稿，manifest 记录 `mask_method=manual|threshold_assisted`；`segment_photo` 未实现自动分割，不伪装。
+- Q2 落实：保持输入视角；manifest 记录 `depth_semantics=relative_larger_nearer` 及原生语义适配说明；姿态限制以警告写入每次 depth manifest 与界面提示。
+- Q3 落实：DA2-Small（transformers 4.57.6 实现）权重 99,175,385 字节 < 1GB（十进制，不含环境）；`.venv-photo` 实测 730.2 MB，未承诺 0.5–1GB；先 CPU 冒烟、MPS 真跑，回退须明示设备；版本冻结于 `requirements/photo-inference.lock`。
+- Q4 落实：仅本地提交与标签，无 push。
+- 接缝修复：master/mold 分派去掉 `source_import` 写死；未知修订种类友好报错；旧 OBJ 导入/阴阳模/回退保留（PH07 回归）。
+
+### 核验指引（在哪里看、看什么）
+
+1. **可复算部分（Git 内，任何评审者可验证）**：
+
+   ```bash
+   git show photo-relief-p1 --stat          # 应为 93f87df、34 文件
+   scripts/dev.sh run --frozen ruff check . # 通过
+   scripts/dev.sh run --frozen pytest -p no:pytest-qt tests/unit tests/architecture tests/integration -m 'not real_model'
+   # 预期 87 passed；旧 26 项测试包含在内
+   ```
+
+   代码检查点：`infrastructure/photo_inference.py` 与 `scripts/photo_inference_worker.py` 中 `local_files_only=True`（产品路径零联网）；`domain/photo_relief.py` 的 `MaskMethod` 枚举（无“AI 分割”值）；`application/mold_workbench.py` 不再写死 `source_import`。
+2. **真机证据（本地未入 Git，评审者只能核对其存在与结构，数值须用户本机复看）**：`experiments/photo_relief/out/20260920-170915-report_data.json` 为机器可读总账（逐张 revision_id、设备、耗时、警告、渲染路径）；`models/hf/depth-anything-v2-small-hf/5426e4f0…/manifest.json` 含逐文件 SHA-256、revision、endpoint、Apache-2.0 及 `license_source` 人工核对 caveat；`scripts/setup_photo_models.py verify` 可重跑校验。
+3. **视觉结果（用户亲自看）**：渲染图 `experiments/photo_relief/out/20260920-170915-<key>/*-iso-lightkit.png`（另有正/侧/头部单光源共 6 视图 + 深度色图）；或 GUI 打开 PH09 工程逐修订查看：
+
+   ```bash
+   scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260920-170915/short_hair_dog photo
+   ```
+
+   看什么：历史列表应含 photo/mask/depth 三条修订；选中 depth 后切“深度图”与“三维中性预览”，换两种光照、调预览起伏（0.05–20 mm）。不带 `--project` 则默认打开 `workspace/photo-workbench` 空工程，可从“导入照片”走完整流程。
+4. **视觉评审结论**：离屏渲染检查显示三张均为平滑连续起伏、无空洞/尖刺/破碎；轮廓辨识度弱（短毛犬“粗略浮雕雏形”、猫“蜷卧剪影可辨、细节不明显”、长毛犬“头身部分可辨、四肢不清”），边缘有与 148px 输入一致的锯齿。此为 GLM 自查，`visual_review` 保持 **pending**，以用户在 GUI 勾选为准。
+
+### PH09 三样例数据摘要
+
+完整数据见 `docs/reports/photo-relief-P1.md` 与 `report_data.json`（路径同上）。
+
+| 样本 | 输入 | 蒙版覆盖 | 设备 | 推理 | 全程 | photo/mask/depth 修订（前 8 位） |
+|---|---|---|---|---|---|---|
+| 短毛犬 | 148×148 | 17.1% | mps | 1.62 s | 5.7 s | 8a910a31 / 4d76ebfb / 2daf5cbe |
+| 猫 | 148×148 | 21.3% | mps | 3.32 s | 9.5 s | c4e88e3b / 978df258 / 042e380b |
+| 长毛犬 | 205×148 | 39.0% | mps | 1.06 s | 4.4 s | f0052fa0 / 16fa1166 / 16637875 |
+
+### 声明边界（核验时不得当作已完成）
+
+- CI 已加 `libgl1`/`libxkbcommon0` 并纳入 integration（排除 real_model），但**未推送、未在 Linux CI 实际运行**，不得宣称 CI 通过。
+- PH05（参考标定）、PH06（母版 OBJ/STL 导出）未实现，属 P2；PH12 延后且现有小图 `blocked_by_input_quality`。
+- 蒙版仅定义有效域，不参与推理输入（manifest 记录 `mask_used_for_inference=False`）。
+- 渲染 QC 与深度输出未通过用户视觉评审；中性预览不是已完成母版。
+- `experiments/`、`workspace/`、`runtime/`、`models/` 均不入 Git；第三方只能核验代码、测试与文档，视觉与数值证据须在用户本机查看。
