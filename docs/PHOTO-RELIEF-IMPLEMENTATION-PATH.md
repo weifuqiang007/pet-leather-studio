@@ -276,20 +276,20 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 1. **可复算部分（Git 内，任何评审者可验证）**：
 
    ```bash
-   git show photo-relief-p1-r2 --stat        # 标签拆分见文末"标签更正"
+   git show photo-relief-p1-r3 --stat        # 标签拆分见文末"标签更正"
    scripts/dev.sh run --frozen ruff check .  # 通过
    scripts/dev.sh run --frozen pytest tests -m 'not real_model'
-   # 预期 107 passed（无模型 97 + GUI 10；第二轮复验累计 +6）
+   # 预期 112 passed（无模型 102 + GUI 10；第三轮复验累计 +10）
    # 旧 26 项测试中的 25 项非 GUI 测试包含在内，其余 1 项 GUI 测试由本命令
    # 的 tests/gui 部分覆盖（旧口径"26 项全部包含"曾不精确，特此更正）
    ```
 
    代码检查点：`infrastructure/photo_inference.py` 与 `scripts/photo_inference_worker.py` 中 `local_files_only=True`（产品路径零联网）；`domain/photo_relief.py` 的 `MaskMethod` 枚举（无“AI 分割”值）；`application/mold_workbench.py` 不再写死 `source_import`。
-2. **真机证据（本地未入 Git，评审者只能核对其存在与结构，数值须用户本机复看）**：当前入口 `experiments/photo_relief/out/20260921-100609-report_data.json`（第三轮客观蒙版）为机器可读总账（逐张 revision_id、设备、耗时、警告、渲染路径）；`models/hf/depth-anything-v2-small-hf/5426e4f0…/manifest.json` 含逐文件 SHA-256、revision、endpoint、Apache-2.0 及 `license_source` 人工核对 caveat；`scripts/setup_photo_models.py verify` 可重跑校验。首轮总账 `…20260920-170915-report_data.json` 原样保留（历史）。
-3. **视觉结果（用户亲自看）**：渲染图 `experiments/photo_relief/out/20260921-100609-<key>/*-iso-lightkit.png`（另有正/侧/头部单光源共 6 视图 + 深度色图）；或 GUI 打开 PH09 工程逐修订查看：
+2. **真机证据（本地未入 Git，评审者只能核对其存在与结构，数值须用户本机复看）**：当前入口 `experiments/photo_relief/out/20260921-110433-report_data.json`（第四轮 threshold_assisted 蒙版）为机器可读总账（逐张 revision_id、设备、耗时、警告、渲染路径）；`models/hf/depth-anything-v2-small-hf/5426e4f0…/manifest.json` 含逐文件 SHA-256、revision、endpoint、Apache-2.0 及 `license_source` 人工核对 caveat；`scripts/setup_photo_models.py verify` 可重跑校验。首轮总账 `…20260920-170915-report_data.json` 原样保留（历史）。
+3. **视觉结果（用户亲自看）**：渲染图 `experiments/photo_relief/out/20260921-110433-<key>/*-iso-lightkit.png`（另有正/侧/头部单光源共 6 视图 + 深度色图）；或 GUI 打开 PH09 工程逐修订查看：
 
    ```bash
-   scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260921-100609/short_hair_dog photo
+   scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260921-110433/short_hair_dog photo
    ```
 
    看什么：历史列表应含 photo/mask/depth 三条修订；选中 depth 后切“深度图”与“三维中性预览”，换两种光照、调预览起伏（0.05–20 mm）。不带 `--project` 则默认打开 `workspace/photo-workbench` 空工程，可从“导入照片”走完整流程。
@@ -297,7 +297,7 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 
 ### PH09 三样例数据摘要（首轮 20260920-170915，历史记录）
 
-当前入口为第三轮（20260921-100609，客观蒙版），数据见 `docs/reports/photo-relief-P1.md` 的"PH09 第三轮"节；下表为首轮数据，原样保留。完整数据见交付记录与对应 `report_data.json`。
+当前入口为第四轮（20260921-110433，threshold_assisted 蒙版），数据见 `docs/reports/photo-relief-P1.md` 的"第三轮复验"与"第四轮 PH09"各节；下表为首轮数据，原样保留。完整数据见交付记录与对应 `report_data.json`。
 
 | 样本 | 输入 | 蒙版覆盖 | 设备 | 推理 | 全程 | photo/mask/depth 修订（前 8 位） |
 |---|---|---|---|---|---|---|
@@ -350,3 +350,14 @@ F1–F4 全部修复；逐项处置与证据见 `docs/reports/photo-relief-P1.md
 ### 第三轮独立验收（Codex，2026-09-21，4ed7c05）
 
 Ruff/format/mypy、97 项非模型、10 项 GUI、2 项真实模型测试全部通过；新三样例九个修订 hash 通过，取消与独立版本标签问题关闭。剩余：损坏 selected.json 仍静默选择其他模型；蒙版叠加没有正确 alpha 混合，主体阈值掩码仍需区分白毛/水印/背景，IoU 自洽不能代替正确性。详见 [第三轮验收报告](reports/photo-relief-P1-reacceptance-4ed7c05.md)。工程主流程通过回归，样例效果仍待修正与评审。
+
+### 第三轮复验完成（GLM，2026-09-21）
+
+A/B/C 全部修复；逐项处置与证据见 `docs/reports/photo-relief-P1.md` 的"第三轮复验"节。
+
+- A 损坏 selected.json：`_selected` 区分"文件不存在"（正常回退最新）与"存在但损坏"（无法解析/非对象/缺/空/类型错 revision → `ResourceMissingError`，附修复指引），不再静默当"没有选择"；新增 4 项参数化回归。
+- B 叠加图 alpha 混合：`save_mask_overlay` 改 `alpha_composite`（红 α=80/255 真混入原图 RGB + 黄边界线 + 存 RGB 无 alpha），主体内部五官/毛流可辨；新增像素级测试（≈0.69×原图+0.31×红、非恒定纯红、蒙版外原图、边界黄线）。
+- C 三样例蒙版逐处判定：猫右下灰影矩形（中性灰 [161,158,157] vs 猫毛暖调 R−B=31）确认为水印误纳、色度判据剔除；长毛犬腹/腿间争议区（中位 dist 35-39、0% 纯白）确认为浅色毛遗漏、thr35∪thr40 补回（eps=1.0 保后腿下缘）；短毛犬"颈胸缺口"经色度右沿三重核对判定为 B 缺陷造成的叠加图误读、不改。`mask_method=threshold_assisted`，判据与人工修正记录写入 manifest notes。
+- 第四轮运行 `workspace/photo-relief-p1/20260921-110433/`：覆盖 37.4%（未改）/ 63.0%→61.4%（剔灰影）/ 48.9%→51.3%（补腹毛）；逐行/逐列外沿核对 + 修好的叠加图视觉复核通过；r3 过期证据已删，换 `ph09-r4-20260921-110433-*`。
+- 标签：本轮提交新增 `photo-relief-p1-r3`（只新增不移动，旧标签未动），未推送远端。
+- 本轮计数：ruff check / format（68 文件）/ mypy 通过；无模型 102 + GUI 10 = **112** 通过；真实模型 2 项上轮通过、本轮未重跑（A/B/C 改动不触及推理内核）。`visual_review` 仍 pending 待用户勾选，阅读入口统一为第四轮 `20260921-110433`。

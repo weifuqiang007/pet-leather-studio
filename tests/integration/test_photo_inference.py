@@ -261,6 +261,29 @@ def test_registry_selected_pointing_to_missing_revision_errors(tmp_path: Path) -
     assert ModelRegistry(root).locate("stub-model") == newer  # 无选择文件才回退最新
 
 
+@pytest.mark.parametrize(
+    "content,match",
+    [
+        ("{broken", r"无法解析"),
+        (json.dumps({}), r"缺少有效 revision"),
+        (json.dumps({"revision": ""}), r"缺少有效 revision"),
+        (json.dumps(["aaaa1111"]), r"不是 JSON 对象"),
+    ],
+)
+def test_registry_corrupted_selected_errors_not_fallback(
+    tmp_path: Path, content: str, match: str
+) -> None:
+    """A（第三轮）：selected.json 存在但损坏必须报错，不得当作"没有选择"回退。
+
+    文件不存在才允许回退最新下载（上一下用例已覆盖）。
+    """
+    root = tmp_path / "models"
+    _write_model(root / "hf" / "stub-model" / "aaaa1111", "2026-09-01T00:00:00")
+    (root / "hf" / "stub-model" / "selected.json").write_text(content, encoding="utf-8")
+    with pytest.raises(ResourceMissingError, match=match):
+        ModelRegistry(root).locate("stub-model")
+
+
 def test_registry_verify_rejects_degenerate_manifests(tmp_path: Path) -> None:
     root = tmp_path / "models"
 

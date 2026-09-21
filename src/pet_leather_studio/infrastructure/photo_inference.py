@@ -48,14 +48,25 @@ class ModelRegistry:
             return None
 
     def _selected(self, model_id: str) -> str | None:
-        """download 时写入的显式选中版本；缺失/损坏视为未选择。"""
+        """download 时写入的显式选中版本；文件不存在视为未选择。
+
+        文件存在但损坏（无法解析、非对象、缺 revision、空值或类型错误）必须报错：
+        显式选择失效 ≠ 可回退，静默当作"没有选择"会掩盖问题并悄悄换版本。
+        """
         path = self.root / "hf" / model_id / "selected.json"
         if not path.is_file():
             return None
+        hint = "请重新 download 该版本，或人工确认后删除 selected.json 以回退最新下载"
         try:
-            return str(json.loads(path.read_text(encoding="utf-8"))["revision"])
-        except (OSError, ValueError, KeyError):
-            return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ResourceMissingError(f"selected.json 无法解析：{path}；{hint}") from error
+        if not isinstance(data, dict):
+            raise ResourceMissingError(f"selected.json 内容不是 JSON 对象：{path}；{hint}")
+        revision = data.get("revision")
+        if not isinstance(revision, str) or not revision.strip():
+            raise ResourceMissingError(f"selected.json 缺少有效 revision 字段：{path}；{hint}")
+        return revision
 
     def locate(self, model_id: str | None) -> Path:
         model = model_id or KNOWN_MODEL_ID
