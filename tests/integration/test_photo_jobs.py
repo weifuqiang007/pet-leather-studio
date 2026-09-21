@@ -162,3 +162,91 @@ def test_sigterm_terminates_worker_process_tree(tmp_path: Path) -> None:
         if harness_proc.poll() is None:
             harness_proc.kill()
             harness_proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="进程组回收仅在 POSIX 验证")
+def test_sigterm_escalates_to_sigkill_for_ignoring_worker(tmp_path: Path) -> None:
+    """F1：忽略 SIGTERM 的 worker 必须在等待窗口后被整组 SIGKILL，不残留。"""
+    root = Path(__file__).resolve().parents[2]
+    stub_worker = tmp_path / "stubborn_worker.py"
+    stub_worker.write_text(
+        textwrap.dedent(
+            """
+            import os, signal, sys, time
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # 模拟不响应取消的 worker
+            out = sys.argv[sys.argv.index("--out") + 1]
+            with open(os.path.join(out, "pid.txt"), "w") as stream:
+                stream.write(str(os.getpid()))
+            time.sleep(60)
+            """
+        ),
+        encoding="utf-8",
+    )
+    harness = tmp_path / "harness.py"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, {str(root / "src")!r})
+            from pet_leather_studio.infrastructure.photo_inference import DepthWorker
+
+            python, stub, image, mask, model, out = sys.argv[1:7]
+            DepthWorker(Path(python), Path(stub)).run(
+                Path(image), Path(mask), Path(model), Path(out)
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "worker-out"
+
+    harness_proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(harness),
+            sys.executable,
+            str(stub_worker),
+            str(tmp_path / "image.png"),
+            str(tmp_path / "mask.png"),
+            str(tmp_path / "model"),
+            str(out_dir),
+        ]
+    )
+    try:
+        pid_file = out_dir / "pid.txt"
+        deadline = time.time() + 15
+        while not pid_file.is_file():
+            assert time.time() < deadline, "worker 未在时限内启动"
+            if harness_proc.poll() is not None:
+                pytest.fail("harness 提前退出")
+            time.sleep(0.05)
+        worker_pid = int(pid_file.read_text().strip())
+        os.kill(worker_pid, 0)
+
+        started = time.monotonic()
+        harness_proc.terminate()  # worker 忽略 TERM，只能靠 KILL 兜底
+        assert harness_proc.wait(timeout=15) != 0
+        elapsed = time.monotonic() - started
+
+        gone = False
+        for _ in range(100):
+            try:
+                os.kill(worker_pid, 0)
+                time.sleep(0.1)
+            except ProcessLookupError:
+                gone = True
+                break
+        assert gone, "忽略 TERM 的 worker 未被 SIGKILL 回收（进程泄漏）"
+        # TERM 等待窗口 2s + KILL：远小于 CLI 自身可容忍的挂死上限
+        assert elapsed < 12, f"KILL 升级过慢（{elapsed:.1f}s）"
+    finally:
+        if harness_proc.poll() is None:
+            harness_proc.kill()
+            harness_proc.wait(timeout=10)
+        try:
+            os.kill(worker_pid, 0)
+            os.kill(worker_pid, 9)  # 兜底清理，避免测试失败时泄漏 sleep 进程
+        except (ProcessLookupError, UnboundLocalError):
+            pass

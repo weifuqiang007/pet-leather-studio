@@ -276,26 +276,28 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 1. **可复算部分（Git 内，任何评审者可验证）**：
 
    ```bash
-   git show photo-relief-p1 --stat          # 标签已重建至复验提交
-   scripts/dev.sh run --frozen ruff check . # 通过
-   scripts/dev.sh run --frozen pytest -p no:pytest-qt tests/unit tests/architecture tests/integration -m 'not real_model'
-   # 预期 94 passed（复验轮新增 7 项）；旧 26 项测试包含在内
+   git show photo-relief-p1-r2 --stat        # 标签拆分见文末"标签更正"
+   scripts/dev.sh run --frozen ruff check .  # 通过
+   scripts/dev.sh run --frozen pytest tests -m 'not real_model'
+   # 预期 107 passed（无模型 97 + GUI 10；第二轮复验累计 +6）
+   # 旧 26 项测试中的 25 项非 GUI 测试包含在内，其余 1 项 GUI 测试由本命令
+   # 的 tests/gui 部分覆盖（旧口径"26 项全部包含"曾不精确，特此更正）
    ```
 
    代码检查点：`infrastructure/photo_inference.py` 与 `scripts/photo_inference_worker.py` 中 `local_files_only=True`（产品路径零联网）；`domain/photo_relief.py` 的 `MaskMethod` 枚举（无“AI 分割”值）；`application/mold_workbench.py` 不再写死 `source_import`。
-2. **真机证据（本地未入 Git，评审者只能核对其存在与结构，数值须用户本机复看）**：`experiments/photo_relief/out/20260920-170915-report_data.json` 为机器可读总账（逐张 revision_id、设备、耗时、警告、渲染路径）；`models/hf/depth-anything-v2-small-hf/5426e4f0…/manifest.json` 含逐文件 SHA-256、revision、endpoint、Apache-2.0 及 `license_source` 人工核对 caveat；`scripts/setup_photo_models.py verify` 可重跑校验。
-3. **视觉结果（用户亲自看）**：渲染图 `experiments/photo_relief/out/20260920-170915-<key>/*-iso-lightkit.png`（另有正/侧/头部单光源共 6 视图 + 深度色图）；或 GUI 打开 PH09 工程逐修订查看：
+2. **真机证据（本地未入 Git，评审者只能核对其存在与结构，数值须用户本机复看）**：当前入口 `experiments/photo_relief/out/20260921-100609-report_data.json`（第三轮客观蒙版）为机器可读总账（逐张 revision_id、设备、耗时、警告、渲染路径）；`models/hf/depth-anything-v2-small-hf/5426e4f0…/manifest.json` 含逐文件 SHA-256、revision、endpoint、Apache-2.0 及 `license_source` 人工核对 caveat；`scripts/setup_photo_models.py verify` 可重跑校验。首轮总账 `…20260920-170915-report_data.json` 原样保留（历史）。
+3. **视觉结果（用户亲自看）**：渲染图 `experiments/photo_relief/out/20260921-100609-<key>/*-iso-lightkit.png`（另有正/侧/头部单光源共 6 视图 + 深度色图）；或 GUI 打开 PH09 工程逐修订查看：
 
    ```bash
-   scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260920-170915/short_hair_dog photo
+   scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260921-100609/short_hair_dog photo
    ```
 
    看什么：历史列表应含 photo/mask/depth 三条修订；选中 depth 后切“深度图”与“三维中性预览”，换两种光照、调预览起伏（0.05–20 mm）。不带 `--project` 则默认打开 `workspace/photo-workbench` 空工程，可从“导入照片”走完整流程。
 4. **视觉评审结论**：离屏渲染检查显示三张均为平滑连续起伏、无空洞/尖刺/破碎；轮廓辨识度弱（短毛犬“粗略浮雕雏形”、猫“蜷卧剪影可辨、细节不明显”、长毛犬“头身部分可辨、四肢不清”），边缘有与 148px 输入一致的锯齿。此为 GLM 自查，`visual_review` 保持 **pending**，以用户在 GUI 勾选为准。
 
-### PH09 三样例数据摘要
+### PH09 三样例数据摘要（首轮 20260920-170915，历史记录）
 
-完整数据见 `docs/reports/photo-relief-P1.md` 与 `report_data.json`（路径同上）。
+当前入口为第三轮（20260921-100609，客观蒙版），数据见 `docs/reports/photo-relief-P1.md` 的"PH09 第三轮"节；下表为首轮数据，原样保留。完整数据见交付记录与对应 `report_data.json`。
 
 | 样本 | 输入 | 蒙版覆盖 | 设备 | 推理 | 全程 | photo/mask/depth 修订（前 8 位） |
 |---|---|---|---|---|---|---|
@@ -309,7 +311,7 @@ scripts/dev.sh run --frozen pytest tests/integration -m real_model
 - PH05（参考标定）、PH06（母版 OBJ/STL 导出）未实现，属 P2；PH12 延后且现有小图 `blocked_by_input_quality`。
 - 蒙版仅定义有效域，不参与推理输入（manifest 记录 `mask_used_for_inference=False`）。
 - 渲染 QC 与深度输出未通过用户视觉评审；中性预览不是已完成母版。
-- `experiments/`、`workspace/`、`runtime/`、`models/` 均不入 Git；第三方只能核验代码、测试与文档，视觉与数值证据须在用户本机查看。
+- `experiments/` 的脚本入 Git（可复算），仅其产物目录 `experiments/photo_relief/out/` gitignored；`workspace/`、`runtime/`、`models/` 不入 Git。第三方可核验代码、测试、文档与 experiments 脚本；视觉与数值证据须在用户本机查看（曾误写"experiments 均不入 Git"，特此更正）。
 
 ### P1 独立验收补充（Codex，2026-09-20）
 
@@ -333,3 +335,14 @@ R1–R6 全部修复并验证；用户报告的 GUI 三视图空白同轮定位�
 ### 第二轮独立验收（Codex，针对 caaf5d3）
 
 实测 94 项非模型、7 项 GUI、2 项真实模型测试及 Ruff/format/mypy 全部通过，新三样例九个修订 hash 通过。但额外复现取消 5 秒后访问已删除 QProcess 的异常；已下载旧模型重新选择仍有指针问题，主体蒙版仍漏明显部位，且移动旧发布标签违反追溯约定。故暂不认定 R1–R6 全关闭。详见 [第二轮验收报告](reports/photo-relief-P1-reacceptance-caaf5d3.md)。
+
+### 第二轮复验完成（GLM，2026-09-21）
+
+F1–F4 全部修复；逐项处置与证据见 `docs/reports/photo-relief-P1.md` 的"第二轮复验"与"PH09 第三轮"两节。
+
+- F1 取消悬空回调：兜底 KILL 改受控 QTimer（job_finished 先停表；回调带进程身份检查），worker 进程组 TERM 2 s 未退整组 SIGKILL；新增 4 项回归（含跨过 5.6 s 兜底窗口、关窗取消、取消中拒绝并发起新任务、忽略 TERM 的 worker 被 KILL 回收）。
+- F2 选中指针：`cmd_download` 已存在分支先重校验再原子更新 `selected.json`；selected 失效时显式报错、不再静默回退；新增 2 项回归。
+- F3 蒙版：放弃目测坐标，三张全部改为像素级客观测定（四角背景色阈值 → 最大连通域弃水印碎块 → 补洞 → 闭运算平滑后并回原前景不削毛尖 → 轮廓追迹简化，IoU≥0.985 自检）；猫虽未被评审点名，复核发现旧目测轮廓切掉耳尖/额头/右侧毛发约 11% 主体，一并重制。第三轮运行 `workspace/photo-relief-p1/20260921-100609/`，覆盖 56.3%→37.4%（去背景误纳）/ 50.3%→63.0%（补耳尖右身）/ 49.5%→48.9%（持平）；叠加图改半透明红+黄边界线，逐行/逐列外沿核对 + 视觉模型逐面板复核通过；`visual_review` 仍 pending 待用户勾选。
+- F4 标签更正：删除被移动过的 `photo-relief-p1`，拆分唯一标签 `photo-relief-p1-original`（93f87df）/ `photo-relief-p1-r1`（caaf5d3）/ `photo-relief-p1-r2`（本轮提交）；旧标签未动，均未推送。
+- 文档更正：R6 恢复原义（lint/format + GUI 联测，清单退化仅其一）；核验命令统一为 `pytest tests -m 'not real_model'`（预期 107 = 无模型 97 + GUI 10），旧 26 项中 25 项非 GUI 含于其中、GUI 1 项由 GUI 套件覆盖；`experiments/` 脚本实际入 Git（仅 `out/` 产物 gitignored）；阅读入口统一为第三轮 `20260921-100609`。
+- 本轮计数：ruff check / format（66 文件）/ mypy 通过；无模型 97 + GUI 10 = 107 通过；真实模型 2 项上轮通过、本轮未重跑（改动不触及推理内核）。

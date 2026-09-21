@@ -18,6 +18,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -34,6 +35,24 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_selected(out_root: Path, revision: str) -> None:
+    """原子写 selected.json（临时文件 + rename）：显式记录当前选中版本。
+
+    已存在的修订重新 download 时也走这里更新指针，否则"先装 A 再装 B 后
+    显式回选 A"会仍指向 B。locate() 优先读取该文件。
+    """
+    selected = out_root / "selected.json"
+    selected.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "revision": revision,
+        "selected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "note": "download 时写入；ModelRegistry.locate 优先使用",
+    }
+    tmp = selected.with_name(selected.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, selected)
 
 
 def cmd_infer(args: argparse.Namespace) -> int:
@@ -182,8 +201,14 @@ def cmd_download(args: argparse.Namespace) -> int:
         return 2
     revision_root = args.out / str(info.sha)
     if revision_root.exists() and (revision_root / "manifest.json").is_file():
-        print(f"已存在：{revision_root}")
-        return 0
+        # 已存在的修订也要重校验，校验通过才把选中指针原子切到该版本，
+        # 否则"先装 A、再装 B、再显式 download --revision A"后界面仍用 B；
+        # 校验失败则保持原选中不变，不把指针切到坏版本。
+        print(f"已存在：{revision_root}；重校验后更新选中指针")
+        result = cmd_verify(argparse.Namespace(model=str(revision_root)))
+        if result == 0:
+            _write_selected(args.out, info.sha)
+        return result
     download_error: Exception | None = None
     for attempt in range(1, 4):
         try:
@@ -233,18 +258,7 @@ def cmd_download(args: argparse.Namespace) -> int:
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     # 记录当前选中版本：locate() 优先读取，不靠 revision 目录名（提交 hash）排序猜最新
-    (args.out / "selected.json").write_text(
-        json.dumps(
-            {
-                "revision": info.sha,
-                "selected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "note": "download 时写入；ModelRegistry.locate 优先使用",
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    _write_selected(args.out, info.sha)
     print(f"完成：{revision_root}（实际 {total / 1e6:.2f} MB）")
     return cmd_verify(argparse.Namespace(model=str(revision_root)))
 

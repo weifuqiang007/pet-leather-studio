@@ -247,6 +247,20 @@ def test_registry_prefers_selected_then_download_time(tmp_path: Path) -> None:
     assert registry.locate("stub-model").name == "ffff1111"  # 显式选择优先
 
 
+def test_registry_selected_pointing_to_missing_revision_errors(tmp_path: Path) -> None:
+    """F2：selected.json 指向缺失修订必须报错，不得静默回退到最新下载。"""
+    root = tmp_path / "models"
+    _write_model(root / "hf" / "stub-model" / "aaaa1111", "2026-09-01T00:00:00")
+    newer = _write_model(root / "hf" / "stub-model" / "bbbb2222", "2026-09-19T00:00:00")
+    selected = root / "hf" / "stub-model" / "selected.json"
+    selected.write_text(json.dumps({"revision": "gone3333"}), encoding="utf-8")
+    with pytest.raises(ResourceMissingError, match=r"selected\.json 指向修订 gone3333"):
+        ModelRegistry(root).locate("stub-model")
+
+    selected.unlink()
+    assert ModelRegistry(root).locate("stub-model") == newer  # 无选择文件才回退最新
+
+
 def test_registry_verify_rejects_degenerate_manifests(tmp_path: Path) -> None:
     root = tmp_path / "models"
 
@@ -356,3 +370,84 @@ def test_download_threads_revision_to_hub(tmp_path: Path, monkeypatch) -> None:
     assert manifest["revision"] == fake_sha
     selected = json.loads((out / "selected.json").read_text(encoding="utf-8"))
     assert selected["revision"] == fake_sha  # 记录选中版本，locate() 不再按 hash 猜
+
+
+def test_download_reselect_updates_pointer_and_keeps_it_on_verify_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """F2：已存在修订重新 download 时重校验并把指针切回该版本；
+    校验失败则保持原选中不变（先校验后切指针，不指向坏版本）。"""
+    import types
+    from types import SimpleNamespace
+
+    shas = {"refs/old-tag": "a" * 40, "refs/new-tag": "b" * 40}
+
+    class FakeApi:
+        def __init__(self, endpoint: str | None = None) -> None:
+            pass
+
+        def model_info(self, repo, files_metadata=False, revision=None):
+            return SimpleNamespace(
+                sha=shas[revision],
+                siblings=[SimpleNamespace(rfilename="model.safetensors", size=16)],
+            )
+
+    def fake_snapshot(**kwargs):
+        local_dir = Path(kwargs["local_dir"])
+        local_dir.mkdir(parents=True, exist_ok=True)
+        (local_dir / "model.safetensors").write_bytes(b"0123456789abcdef")
+        return str(local_dir)
+
+    hub = types.ModuleType("huggingface_hub")
+    hub.HfApi = FakeApi
+    hub.snapshot_download = fake_snapshot
+    requests_mod = types.ModuleType("requests")
+    exceptions = types.ModuleType("requests.exceptions")
+
+    class RequestException(Exception):
+        pass
+
+    exceptions.RequestException = RequestException
+    requests_mod.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setitem(sys.modules, "requests", requests_mod)
+    monkeypatch.setitem(sys.modules, "requests.exceptions", exceptions)
+
+    worker = _load_worker_module()
+    out = tmp_path / "models" / "hf" / "stub-model"
+
+    def download(tag: str) -> int:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "worker.py",
+                "download",
+                "--repo",
+                "org/stub",
+                "--revision",
+                tag,
+                "--out",
+                str(out),
+                "--cache",
+                str(tmp_path / "cache"),
+            ],
+        )
+        return worker.main()
+
+    def selected_revision() -> str:
+        return json.loads((out / "selected.json").read_text(encoding="utf-8"))["revision"]
+
+    assert download("refs/old-tag") == 0
+    assert selected_revision() == "a" * 40
+    assert download("refs/new-tag") == 0
+    assert selected_revision() == "b" * 40
+
+    # 已存在的 A 再次显式 download：界面/定位应切回 A（旧实现不更新指针、仍指 B）
+    assert download("refs/old-tag") == 0
+    assert selected_revision() == "a" * 40
+
+    # B 的权重被改坏后重新 download：校验失败退出，选中指针不得切到坏版本
+    (out / ("b" * 40) / "model.safetensors").write_bytes(b"tampered-bytes")
+    assert download("refs/new-tag") == 1
+    assert selected_revision() == "a" * 40

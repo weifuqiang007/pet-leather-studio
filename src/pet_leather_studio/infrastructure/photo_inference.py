@@ -14,6 +14,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -75,9 +76,16 @@ class ModelRegistry:
                 f"模型 {model} 没有带清单的修订目录；请先运行：{SETUP_COMMAND}"
             )
         selected = self._selected(model)
-        chosen = next((path for _, path in entries if path.name == selected), None)
-        if chosen is None:
-            # 无显式选择：按 manifest 的 downloaded_at 取最新；提交 hash 字典序不代表时间
+        if selected is not None:
+            # 显式选择失效必须报错，不得静默换版本（明确选择失败 ≠ 可回退）
+            chosen = next((path for _, path in entries if path.name == selected), None)
+            if chosen is None:
+                raise ResourceMissingError(
+                    f"selected.json 指向修订 {selected}，但该目录缺失或无有效清单；"
+                    "请重新 download 该版本，或人工确认后删除 selected.json 以回退最新下载"
+                )
+        else:
+            # 无显式选择文件：按 manifest 的 downloaded_at 取最新；提交 hash 字典序不代表时间
             entries.sort()
             chosen = entries[-1][1]
         self.verify(chosen)
@@ -107,11 +115,39 @@ class ModelRegistry:
         return manifest
 
 
+def _group_has_live_process(pgid: int) -> bool:
+    """进程组内是否仍有存活进程；先收割已退出的直接子进程，避免僵尸让组假活。"""
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    try:
+        os.waitpid(pgid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # 已被收割或非本进程子进程；继续按组探测
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _wait_group_exit(pgid: int, timeout_s: float) -> bool:
+    """等待进程组退出；返回 True 表示超时前整组已退出。"""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _group_has_live_process(pgid):
+            return True
+        time.sleep(0.05)
+    return not _group_has_live_process(pgid)
+
+
 class DepthWorker:
     """以参数列表启动隔离进程执行真实推理；不拼 shell、不加载权重到本进程。
 
     取消语义（POSIX）：worker 以独立进程组启动；本进程收到 SIGTERM 时
-    先 killpg 整组回收 worker 再退出，保证 GUI 取消后不残留推理子进程。
+    对整组先 TERM、等待后仍存活再 KILL（应对忽略 TERM 的 worker），
+    全部回收后才退出，保证 GUI 取消后不残留推理子进程。
     """
 
     def __init__(self, venv_python: Path, worker_script: Path) -> None:
@@ -151,8 +187,12 @@ class DepthWorker:
         if os.name == "posix" and threading.current_thread() is threading.main_thread():
 
             def _terminate_worker(signum: int, _frame: object) -> None:
+                # 整组 TERM → 短暂等待 → 仍存活则整组 KILL：对忽略 TERM 的
+                # worker 也能回收，保证取消后不残留推理进程。
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
+                    if not _wait_group_exit(process.pid, 2.0):
+                        os.killpg(process.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
                 raise SystemExit(128 + signum)

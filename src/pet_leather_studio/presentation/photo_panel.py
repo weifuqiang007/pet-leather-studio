@@ -66,6 +66,7 @@ class PhotoWorkbenchWindow(QMainWindow):
         super().__init__()
         self.service, self.project = service, project
         self.process = None
+        self.kill_timer = None
         self.close_after_job = False
         self.setWindowTitle("照片 → 浮雕 · P1（人工蒙版 + 真实深度 · 相机视角）")
         self.resize(1320, 860)
@@ -467,15 +468,31 @@ class PhotoWorkbenchWindow(QMainWindow):
         # 5 秒未退出再兜底 SIGKILL，防止 TERM 被忽略导致任务挂死。
         process.terminate()
         self.status.setText("正在取消（先 TERM 再兜底 KILL）；历史成功版本保持不变")
-        QTimer.singleShot(
-            5000,
-            lambda: process.kill() if process.state() != QProcess.ProcessState.NotRunning else None,
-        )
+        # 受控定时器：任务结束时停止并释放。不能用 QTimer.singleShot 捕获 process——
+        # 任务正常结束后 deleteLater，延迟回调再访问已销毁的 C++ 对象会抛异常。
+        if self.kill_timer is not None:
+            self.kill_timer.stop()
+            self.kill_timer.deleteLater()
+        self.kill_timer = QTimer(self)
+        self.kill_timer.setSingleShot(True)
+        self.kill_timer.timeout.connect(lambda: self._escalate_kill(process))
+        self.kill_timer.start(5000)
+
+    def _escalate_kill(self, process):
+        # 只处理仍是当前任务的进程；已结束或已换任务的旧对象一律不碰
+        if self.process is not process:
+            return
+        if process.state() != QProcess.ProcessState.NotRunning:
+            process.kill()
 
     def job_finished(self, code, status):
         process = self.process
         if process is None:
             return
+        if self.kill_timer is not None:
+            self.kill_timer.stop()
+            self.kill_timer.deleteLater()
+            self.kill_timer = None
         errors = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
         self.process = None
         process.deleteLater()

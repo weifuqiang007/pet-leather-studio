@@ -143,3 +143,58 @@ def test_view_switching_auto_uses_latest_chain(qtbot, tmp_path: Path) -> None:
         assert "预览失败" not in window.details.toPlainText()
     assert "已用同照片最新修订预览" in window.details.toPlainText()
     window.close()
+
+
+def test_cancel_job_stops_kill_timer_and_survives_window(qtbot, tmp_path: Path) -> None:
+    """F1：取消后任务结束即停止受控 kill 定时器；等过 5s 兜底窗口不得再触碰
+    已销毁的 QProcess（pytest-qt 会把槽内异常直接判为失败）。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    png = _photo_png(tmp_path / "cancel.png")
+    window.start_job(["import-photo", str(png)])
+    assert window.process is not None
+    window.cancel_job()
+    assert window.kill_timer is not None  # 取消时定时器确实武装（任务仍在运行）
+    qtbot.waitUntil(lambda: window.process is None, timeout=30000)
+    assert window.kill_timer is None  # job_finished 已停止并清空
+    qtbot.wait(5600)  # 覆盖 5s 兜底窗口：旧实现此处触发已删除 C++ 对象访问
+    assert window.process is None
+    window.close()
+
+
+def test_close_window_during_job_cancels_then_closes(qtbot, tmp_path: Path) -> None:
+    """F1：任务进行中关窗 → 先取消任务，结束后自动关闭；无残留定时器。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.show()
+    png = _photo_png(tmp_path / "close.png")
+    window.start_job(["import-photo", str(png)])
+    window.close()  # closeEvent：取消并推迟关闭
+    assert window.close_after_job is True
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=30000)
+    assert window.process is None
+    assert window.kill_timer is None
+    window.close()
+
+
+def test_start_job_during_pending_cancel_is_ignored(qtbot, tmp_path: Path) -> None:
+    """F1：取消尚未完成时不得并发起第二个任务进程；取消结束后可正常起新任务。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    png = _photo_png(tmp_path / "double.png")
+    window.start_job(["import-photo", str(png)])
+    first = window.process
+    window.cancel_job()
+    assert window.kill_timer is not None  # 取消尚未完成
+    window.start_job(["import-photo", str(png)])  # 旧进程仍在：直接返回
+    assert window.process is first
+    qtbot.waitUntil(lambda: window.process is None, timeout=30000)
+    assert window.import_button.isEnabled()
+
+    window.start_job(["import-photo", str(png)])  # 取消结束后可正常起新任务
+    qtbot.waitUntil(lambda: window.process is None, timeout=30000)
+    assert "完成" in window.status.text()
+    window.close()

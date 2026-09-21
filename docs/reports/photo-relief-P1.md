@@ -1,6 +1,6 @@
 # 照片浮雕 P1 交付记录
 
-日期：2026-09-20；分支 `glm/photo-relief-p1`；发布标签 `photo-relief-p1`（未推送远端）。
+日期：2026-09-20（首轮）/ 2026-09-20（复验）/ 2026-09-21（第二轮复验）；分支 `glm/photo-relief-p1`；发布标签见"版本及回退"（未推送远端）。
 
 ## 完成范围
 
@@ -61,7 +61,7 @@ CI 新增 `libgl1`/`libxkbcommon0` 安装步骤并运行 integration（排除 `r
 
 脚本 `experiments/photo_relief/run_p1_three_photos.py`；运行 `workspace/photo-relief-p1/20260920-170915/`；机器数据 `experiments/photo_relief/out/20260920-170915-report_data.json`。三张均为 MPS 设备真实 DA2-Small 推理（transformers 4.57.6），语义 `relative_larger_nearer`，预览宽 80 mm / 起伏上限 2 mm。
 
-> 注：本轮蒙版为 M0.5 局部标注（评审 R3 指出覆盖不全），已被下方"PH09 复跑"取代；本轮数据与证据原样保留。
+> 注：本轮蒙版为 M0.5 局部标注（评审 R3 指出覆盖不全），已被下方"PH09 复跑"取代，后者又被"PH09 第三轮（客观蒙版）"取代；本轮数据与证据原样保留。**当前阅读入口：第三轮（`20260921-100609`）。**
 
 | 样本 | 输入 | 蒙版覆盖 | 深度有效覆盖 | 推理耗时 | 全程 |
 | --- | --- | --- | --- | --- | --- |
@@ -97,7 +97,7 @@ CI 新增 `libgl1`/`libxkbcommon0` 安装步骤并运行 integration（排除 `r
 | R3 蒙版只覆盖局部 | 三张蒙版沿用 M0.5 局部标注 | 重制完整可见主体蒙版并复跑三样例（见下节） | 叠加图人工核对 + 新 PH09 运行 |
 | R4 NaN 静默排除 | 主体内 NaN 被静默改为背景、有效域缩水 | 主体域内 NaN/Inf 一律拒绝发布（PH04），新增 1% 工程下限；原始浮点 `depth_raw.npy` 随修订保存供诊断 | `test_assemble_rejects_nan_inside_subject`、`test_assemble_rejects_tiny_coverage`、`test_assemble_preserves_raw_float_output` |
 | R5 版本选择/下载线程 | 按 hash 字典序选版、`--revision` 未透传 hub | download 写 `selected.json` 显式记录选中版本；无选择文件时按 `downloaded_at` 取最新；`model_info`/`snapshot_download` 全程透传 revision | `test_registry_prefers_selected_then_download_time`、`test_download_threads_revision_to_hub` |
-| R6 清单退化绕过 | 空文件列表/无权重/嵌套路径清单可用 | 清单为空、缺 `.safetensors`、含非顶层路径均拒绝使用 | `test_registry_verify_rejects_degenerate_manifests` |
+| R6 门禁清单退化（原义为 lint/format、GUI 联测与清单校验等多道门退化，清单仅其一） | 空文件列表/无权重/嵌套路径清单可用 | 清单为空、缺 `.safetensors`、含非顶层路径均拒绝使用；lint/format/mypy 与 GUI 套件作为门禁实际重跑（见下"复验测试计数"） | `test_registry_verify_rejects_degenerate_manifests` + 门禁命令输出 |
 
 GUI 三视图空白的定位与修复：
 
@@ -132,14 +132,45 @@ GUI 三视图空白的定位与修复：
 
 叠加图与斜视渲染证据：`runtime/evidence/photo-p1/ph09-rerun-20260920-181637-<key>-{mask-overlay,iso}.png`。视觉评审仍为 pending，最终以用户在 GUI 中勾选为准。
 
+## 第二轮复验（2026-09-21，回应复验报告 caaf5d3）
+
+背景：第三方复验（`docs/reports/photo-relief-P1-reacceptance-caaf5d3.md`，结论"基础工程明显改善，暂不签署 R1–R6 全部关闭"）提出 F1–F4。逐项处置：
+
+| 项 | 评审发现 | 处置 | 验证 |
+| --- | --- | --- | --- |
+| F1 [P1] 取消后悬空回调 | 5 s QTimer 兜底 lambda 捕获的 QProcess 在任务正常结束后已被 deleteLater，触发 `libshiboken: Internal C++ object ... already deleted` | 兜底改为受控 QTimer（父对象为窗口、单射）；`job_finished` 先停表清空再读输出；回调加 `self.process is not process` 身份检查与 NotRunning 防护；worker 进程组 TERM 后 2 s 未退整组 SIGKILL | `test_cancel_job_stops_kill_timer_and_survives_window`（跨过 5.6 s 兜底窗口）、`test_close_window_during_job_cancels_then_closes`、`test_start_job_during_pending_cancel_is_ignored`、`test_sigterm_escalates_to_sigkill_for_ignoring_worker`（KILL 升级实测 ~2.2 s） |
+| F2 [P2] 选中指针不更新/静默回退 | `cmd_download` 已存在分支不重校验、不更新 `selected.json`；locate 遇失效 selected 静默回退最新版 | 已存在分支改为先重校验、通过后以 tmp+`os.replace` 原子更新 `selected.json`（校验失败不切指针）；selected 指向缺失修订时抛 `ResourceMissingError`，无 selected 才按 `downloaded_at` 取最新 | `test_registry_selected_pointing_to_missing_revision_errors`、`test_download_reselect_updates_pointer_and_keeps_it_on_verify_failure` |
+| F3 [P2] 蒙版不完整/叠加图不可核对 | 犬两张主体部位（右耳、头顶毛、右侧身体、爪部）在蒙版外、背景误纳；叠加图整片高不透明度红 | 三张蒙版全部改为像素级客观测定（见下节），叠加图改半透明红 + 黄色边界线；重新执行三样例。猫虽未被评审点名，第三轮复核确认第一轮目测轮廓切掉耳尖/额头/右侧毛发（约 11% 主体），一并重制 | 逐行/逐列外沿核对（残差均在浅色绒毛过渡带或 ≤6 px 不连通绒毛簇）+ 叠加图视觉模型逐面板复核 |
+| F4 [P2] 发布标签被移动 | `photo-relief-p1` 从 93f87df 移到 caaf5d3，违反"新增唯一标签、不移动旧标签"约定 | 拆分为唯一标签 `photo-relief-p1-original`（93f87df）/ `photo-relief-p1-r1`（caaf5d3）/ `photo-relief-p1-r2`（本轮提交），删除被移动的 `photo-relief-p1`；旧标签未动（见"版本及回退"） | `git tag -l --format=...` 逐标签对照提交 |
+
+第二轮复验测试计数（本机 macOS arm64）：ruff check 通过、ruff format 通过（66 文件）、mypy 8 文件通过；`pytest tests -m 'not real_model'` **107 项通过**（无模型 97 + GUI 10，较上轮 +6：F1×4、F2×2）；真实模型冒烟 2 项上轮通过、本轮未重跑（本轮改动不触及推理内核）。
+
+## PH09 第三轮（客观蒙版；当前阅读入口）
+
+新运行 `workspace/photo-relief-p1/20260921-100609/`，机器数据 `experiments/photo_relief/out/20260921-100609-report_data.json`（MPS 真实推理，语义与预览参数同上轮）：
+
+| 样本（蒙版口径） | 蒙版覆盖（上轮→本轮） | 深度有效覆盖 | 推理耗时 | 全程 |
+| --- | --- | --- | --- | --- |
+| 短毛犬（头 + 可见上身） | 56.3% → 37.4% | 37.4% | 3.29 s | 16.1 s |
+| 猫（双耳 + 面部 + 身体，含底边胸口） | 50.3% → 63.0% | 63.0% | 2.14 s | 11.9 s |
+| 长毛犬（全身） | 49.5% → 48.9% | 48.9% | 2.25 s | 11.7 s |
+
+方法与核对：
+
+- 客观测定管线（取代两轮均有偏差的目测坐标）：四角 12×12 中位背景色 → 欧氏距离阈值 40 前景 → 最大连通域（丢弃水印碎块）→ `binary_fill_holes`（耳间/胸前浅色毛）→ `binary_closing` 2 px 平滑凹口后与原前景取并（不削细毛尖）→ Moore 轮廓追迹 + Douglas-Peucker 简化；多边形栅格化回填与主体掩码 IoU ≥ 0.985 自检。多边形内联于脚本 `FULL_SUBJECT_POLYGONS`（坐标定义于原图像素系）。
+- 与上轮差异：短毛犬去掉误纳的背景条/穹顶后覆盖回落至真实主体 37.4%；猫补回耳尖（y=0）/额头/右侧毛发并含底边胸口毛（gettyimages 半透明水印叠在毛上而非背景，按主体保留）升至 63.0%；长毛犬 48.9% 与上轮持平。
+- 边界核对：逐行/逐列对比蒙版外沿与阈值前景外沿（容差 3 px）——残差或位于浅色绒毛 thr35↔thr50 过渡带内（蒙版外沿介于两阈值外沿之间），或为 ≤6 px 的不连通绒毛簇（thr40 连通域分析弃置）；无整块主体缺失、无背景大块误纳。
+- 叠加图（半透明红 + 黄边界）经视觉模型逐面板复核：短毛犬耳部完整、无背景穹顶/背景条；猫双耳含耳尖、面部、右侧身体、底部胸口均在界内；长毛犬头顶/背线/臀部/前爪在界内、腿间空隙为凹口。视觉评审仍为 pending，最终以用户在 GUI 中勾选为准。
+- 证据：`runtime/evidence/photo-p1/ph09-r3-20260921-100609-<key>-{mask-overlay,iso}.png`。
+
 ## 用户复测指引（GUI）
 
 ```bash
 conda deactivate   # 避免 base 环境干扰 Qt/VTK
-scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260920-181637/short_hair_dog photo
+scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-p1/20260921-100609/short_hair_dog photo
 ```
 
-注意 `--project` 必须在子命令 `photo` 之前。窗口内切换 原图/蒙版/深度图/三维中性预览 四视图；选中 photo 修订切其他视图会自动用同照片最新修订预览并在详情注明。
+注意 `--project` 必须在子命令 `photo` 之前。窗口内切换 原图/蒙版/深度图/三维中性预览 四视图；选中 photo 修订切其他视图会自动用同照片最新修订预览并在详情注明。前两轮工程（`20260920-170915/`、`20260920-181637/`）原样保留可对比。
 
 ## 未实现与限制
 
@@ -150,4 +181,4 @@ scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-
 
 ## 版本及回退
 
-旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。标签 `photo-relief-p1` 原指向首轮交付提交（未通过验收），复验修复完成后删除并在复验提交上重建（标签未推送远端，移动仅影响本地）；改动前状态另存 Git bundle（见上）。按约定本轮不推送远端。
+旧标签 `baseline-before-mold-refocus-20260920`、`mold-workbench-v0.1.0` 未移动。第二轮复验指出首轮复验曾把 `photo-relief-p1` 从交付提交移动到复验提交，违反"新增唯一标签、不移动旧标签"约定；本轮更正为拆分唯一标签：`photo-relief-p1-original`（93f87df，首轮交付）、`photo-relief-p1-r1`（caaf5d3，首轮复验修复）、`photo-relief-p1-r2`（本轮提交，第二轮复验修复），并删除被移动过的 `photo-relief-p1`。所有标签均未推送远端，移动仅影响过本地；改动前状态另存 Git bundle（见上）。按约定本轮不推送远端。
