@@ -1,5 +1,6 @@
 """PH08：失败/崩溃不留成功修订、active 不回退、可重跑；残留 staging 显式清理。"""
 
+import json
 import os
 import subprocess
 import sys
@@ -7,23 +8,56 @@ import textwrap
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
+import trimesh
 from photo_stubs import StubInference, StubRegistry, make_mask_png, make_photo_png
 
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench
 from pet_leather_studio.domain.photo_relief import MaskMethod
+from pet_leather_studio.infrastructure.photo_geometry import PhotoGeometry
 from pet_leather_studio.infrastructure.photo_io import PhotoIO
+from pet_leather_studio.infrastructure.reference_profile import ReferenceProfileStore
 from pet_leather_studio.infrastructure.revisions import RevisionStore
 
 
 def prepare_pair(tmp_path: Path, mode: str = "ok") -> tuple[RevisionStore, PhotoWorkbench, dict]:
     store = RevisionStore(tmp_path / "proj")
-    service = PhotoWorkbench(store, PhotoIO(), StubInference(mode), StubRegistry())
+    service = PhotoWorkbench(
+        store,
+        PhotoIO(),
+        StubInference(mode),
+        StubRegistry(),
+        PhotoGeometry(),
+        ReferenceProfileStore(tmp_path / "profiles"),
+    )
     photo = service.import_photo(make_photo_png(tmp_path / "pet.png"))
     mask = service.save_mask(
         photo.revision_id, make_mask_png(tmp_path / "mask.png"), MaskMethod.MANUAL
     )
     return store, service, {"photo": photo, "mask": mask}
+
+
+def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pet_leather_studio", *arguments],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _write_reference_obj(path: Path) -> None:
+    """11×11 表面：0 底 + 4 mm 方凸（percentile 99 → 有效起伏 4 mm）。"""
+    xs = np.linspace(0.0, 10.0, 11)
+    xx, yy = np.meshgrid(xs, xs)
+    zz = np.zeros_like(xx)
+    zz[4:7, 4:7] = 4.0
+    index = (np.arange(10)[:, None] * 11 + np.arange(10)).ravel()
+    b, c, d = index + 1, index + 12, index + 11
+    faces = np.vstack([np.column_stack([index, b, c]), np.column_stack([index, c, d])])
+    points = np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+    trimesh.Trimesh(points, faces, process=False).export(path)
 
 
 @pytest.mark.parametrize(
@@ -84,6 +118,54 @@ def test_prune_staging_removes_only_stale_residue(tmp_path: Path) -> None:
     recent = store.root / "staging" / "just-now"
     recent.mkdir()
     assert store.prune_staging(min_age_hours=1.0) == []  # 未到时限不清理
+
+
+def test_cli_build_master_return_codes(tmp_path: Path) -> None:
+    store, service, pair = prepare_pair(tmp_path, "ok")
+    depth = service.estimate_depth(pair["photo"].revision_id, pair["mask"].revision_id)
+    done = run_cli(
+        "--project",
+        str(tmp_path / "proj"),
+        "build-master",
+        "--depth",
+        depth.revision_id,
+        "--width-mm",
+        "40",
+        "--depth-mm",
+        "1.5",
+        "--base-mm",
+        "2",
+    )
+    assert done.returncode == 0, done.stderr
+    payload = json.loads(done.stdout)
+    assert payload["kind"] == "master"
+    assert payload["input_method"] == "photo_reconstruction"
+    assert store.get(payload["revision_id"])["kind"] == "master"
+
+    missing = run_cli("--project", str(tmp_path / "proj"), "build-master", "--depth", "no-such")
+    assert missing.returncode == 1
+    assert "error" in json.loads(missing.stderr)  # 失败走 JSON stderr + 返回码 1
+
+
+def test_cli_calibrate_reference_and_profiles_listing(tmp_path: Path) -> None:
+    obj = tmp_path / "reference.obj"
+    _write_reference_obj(obj)
+    root = tmp_path / "profiles"
+    done = run_cli("calibrate-reference", "--obj", str(obj), "--root", str(root))
+    assert done.returncode == 0, done.stderr
+    payload = json.loads(done.stdout)
+    assert payload["profile"]["effective_relief_mm"] == pytest.approx(4.0)
+    assert Path(payload["saved"]).is_file()
+
+    listing = run_cli("photo-profiles", "--root", str(root))
+    assert listing.returncode == 0, listing.stderr
+    assert [item["profile_id"] for item in json.loads(listing.stdout)["profiles"]] == [
+        payload["profile"]["profile_id"]
+    ]
+
+    broken = run_cli("calibrate-reference", "--obj", str(tmp_path / "missing.obj"))
+    assert broken.returncode == 1
+    assert "error" in json.loads(broken.stderr)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="进程组回收仅在 POSIX 验证")

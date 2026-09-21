@@ -44,6 +44,30 @@ def parser() -> argparse.ArgumentParser:
     depth.add_argument("--photo", required=True)
     depth.add_argument("--mask", required=True)
     depth.add_argument("--model", default=None)
+    master = sub.add_parser("build-master")
+    master.add_argument("--depth", required=True)
+    master.add_argument("--width-mm", type=float, default=60.0)
+    master.add_argument(
+        "--height-mode", choices=["explicit_depth", "reference_ratio"], default="explicit_depth"
+    )
+    master.add_argument("--depth-mm", type=float, default=2.0)
+    master.add_argument("--profile", default=None)
+    master.add_argument("--smoothing-mm", type=float, default=None)
+    master.add_argument("--base-mm", type=float, default=3.0)
+    master.add_argument(
+        "--adjustment",
+        action="append",
+        default=None,
+        metavar="PNG:OFFSET:TRANSITION[:LABEL]",
+        help="局部调整，可重复；OFFSET/TRANSITION 单位 mm",
+    )
+    calibrate = sub.add_parser("calibrate-reference")
+    calibrate.add_argument("--obj", type=Path, required=True)
+    calibrate.add_argument("--percentile", type=float, default=99.0)
+    calibrate.add_argument("--region", default=None, help="xmin,xmax,ymin,ymax（源单位）")
+    calibrate.add_argument("--source-units", default="assumed_mm")
+    calibrate.add_argument("--root", type=Path, default=None, help="标定存储目录")
+    sub.add_parser("photo-profiles").add_argument("--root", type=Path, default=None)
     sub.add_parser("photo-history")
     prune = sub.add_parser("prune-staging")
     prune.add_argument("--min-age-hours", type=float, default=1.0)
@@ -60,7 +84,16 @@ def main() -> int:
         return 0
     project = args.project or environment.data_root() / "workspace" / "mold-workbench"
 
-    if args.command in {"photo", "import-photo", "save-mask", "estimate-depth", "photo-history"}:
+    if args.command in {
+        "photo",
+        "import-photo",
+        "save-mask",
+        "estimate-depth",
+        "build-master",
+        "calibrate-reference",
+        "photo-profiles",
+        "photo-history",
+    }:
         project = args.project or environment.data_root() / "workspace" / "photo-workbench"
         from pet_leather_studio.bootstrap.workbench import create_photo_workbench
 
@@ -88,6 +121,68 @@ def main() -> int:
                 )
             elif args.command == "estimate-depth":
                 output = service.estimate_depth(args.photo, args.mask, args.model)
+            elif args.command == "build-master":
+                from dataclasses import asdict
+
+                from pet_leather_studio.domain.photo_relief import (
+                    HeightMode,
+                    LocalAdjustment,
+                    ReliefParameters,
+                )
+
+                adjustments: list[LocalAdjustment] = []
+                for index, spec in enumerate(args.adjustment or []):
+                    parts = spec.split(":")
+                    if len(parts) < 3:
+                        raise ValueError(
+                            f"--adjustment 需要 PNG:OFFSET:TRANSITION[:LABEL] 格式，收到 {spec!r}"
+                        )
+                    adjustments.append(
+                        LocalAdjustment(
+                            label=":".join(parts[3:]) or f"调整{index + 1}",
+                            region_png=parts[0],
+                            offset_mm=float(parts[1]),
+                            transition_mm=float(parts[2]),
+                        )
+                    )
+                output = asdict(
+                    service.build_master(
+                        args.depth,
+                        ReliefParameters(
+                            width_mm=args.width_mm,
+                            depth_mm=args.depth_mm,
+                            height_mode=HeightMode(args.height_mode),
+                            profile_id=args.profile,
+                            smoothing_radius_mm=args.smoothing_mm,
+                            base_thickness_mm=args.base_mm,
+                        ),
+                        tuple(adjustments),
+                    )
+                )
+            elif args.command == "calibrate-reference":
+                from pet_leather_studio.infrastructure.reference_profile import (
+                    ReferenceProfileStore,
+                    measure_reference,
+                )
+
+                region = None
+                if args.region:
+                    values = [float(value) for value in args.region.split(",")]
+                    if len(values) != 4:
+                        raise ValueError("--region 必须是 xmin,xmax,ymin,ymax 四个数")
+                    region = (values[0], values[1], values[2], values[3])
+                profile = measure_reference(args.obj, args.percentile, region, args.source_units)
+                saved = ReferenceProfileStore(
+                    args.root or environment.data_root() / "profiles"
+                ).save(profile)
+                output = {"saved": str(saved), "profile": profile.to_json_dict()}
+            elif args.command == "photo-profiles":
+                from pet_leather_studio.infrastructure.reference_profile import (
+                    ReferenceProfileStore,
+                )
+
+                store = ReferenceProfileStore(args.root or environment.data_root() / "profiles")
+                output = {"profiles": [item.to_json_dict() for item in store.list_profiles()]}
             else:
                 output = {"revisions": service.store.history()}
             print(json.dumps(output, ensure_ascii=False, indent=2, default=str))

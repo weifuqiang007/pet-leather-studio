@@ -16,7 +16,11 @@ environment.apply_local_env()
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench  # noqa: E402
 from pet_leather_studio.bootstrap.environment import data_root  # noqa: E402
 from pet_leather_studio.domain.photo_relief import MaskMethod  # noqa: E402
+from pet_leather_studio.infrastructure.photo_geometry import PhotoGeometry  # noqa: E402
 from pet_leather_studio.infrastructure.photo_io import PhotoIO  # noqa: E402
+from pet_leather_studio.infrastructure.reference_profile import (  # noqa: E402
+    ReferenceProfileStore,
+)
 from pet_leather_studio.infrastructure.revisions import RevisionStore  # noqa: E402
 from pet_leather_studio.presentation.photo_panel import (  # noqa: E402
     VIEW_3D,
@@ -79,7 +83,14 @@ def _mask_png(path: Path) -> Path:
 def _build_chain(tmp_path: Path) -> tuple[RevisionStore, PhotoWorkbench, str]:
     project = tmp_path / "proj"
     store = RevisionStore(project)
-    service = PhotoWorkbench(store, PhotoIO(), StubInference(), StubRegistry())
+    service = PhotoWorkbench(
+        store,
+        PhotoIO(),
+        StubInference(),
+        StubRegistry(),
+        PhotoGeometry(),
+        ReferenceProfileStore(tmp_path / "profiles"),
+    )
     photo = service.import_photo(_photo_png(tmp_path / "pet.png"))
     mask = service.save_mask(
         photo.revision_id, _mask_png(tmp_path / "mask.png"), MaskMethod.MANUAL, notes="GUI 测试"

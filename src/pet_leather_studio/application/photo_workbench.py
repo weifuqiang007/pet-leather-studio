@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from pet_leather_studio.domain.errors import UnsupportedOperationError
@@ -13,8 +14,16 @@ from pet_leather_studio.domain.photo_ports import (
     DepthInferencePort,
     ModelRegistryPort,
     PhotoIOPort,
+    ReferenceProfilePort,
+    ReliefGeometryPort,
 )
-from pet_leather_studio.domain.photo_relief import MaskMethod, RevisionSummary
+from pet_leather_studio.domain.photo_relief import (
+    HeightMode,
+    LocalAdjustment,
+    MaskMethod,
+    ReliefParameters,
+    RevisionSummary,
+)
 
 CAMERA_VIEW_NOTE = (
     "深度为相机视角下的相对前后关系；未做姿态归一化或正面化（P1 边界，"
@@ -30,11 +39,15 @@ class PhotoWorkbench:
         photo_io: PhotoIOPort,
         inference: DepthInferencePort,
         registry: ModelRegistryPort,
+        geometry: ReliefGeometryPort,
+        profiles: ReferenceProfilePort,
     ) -> None:
         self.store = store
         self.photo_io = photo_io
         self.inference = inference
         self.registry = registry
+        self.geometry = geometry
+        self.profiles = profiles
 
     def import_photo(self, source: Path) -> RevisionSummary:
         stage = self.store.begin()
@@ -115,6 +128,58 @@ class PhotoWorkbench:
             # 发布前再次校验上游未被篡改
             self.store.verify(photo_id)
             self.store.verify(mask_id)
+            published = self.store.publish(stage, metadata)
+            return RevisionSummary.from_metadata(published)
+        except BaseException:
+            self.store.discard(stage)
+            raise
+
+    def build_master(
+        self,
+        depth_id: str,
+        parameters: ReliefParameters,
+        adjustments: Sequence[LocalAdjustment] = (),
+    ) -> RevisionSummary:
+        """受控浮雕化：depth 修订 → master 母版修订（几何校验失败不发布）。"""
+        depth = self.store.get(depth_id)
+        if depth.get("kind") != "depth":
+            raise ValueError(f"修订 {depth_id[:8]} 不是 depth（{depth.get('kind')}），不能生成母版")
+        parameters.validate()
+        for adjustment in adjustments:
+            adjustment.validate()
+        profile = None
+        if parameters.height_mode is HeightMode.REFERENCE_RATIO:
+            if not parameters.profile_id:
+                raise ValueError("reference_ratio 模式必须提供已标定的 profile_id")
+            profile = self.profiles.load(parameters.profile_id)  # 缺失/损坏显式报错
+        photo_id = depth.get("photo_id")
+        mask_id = depth.get("mask_id")
+        for upstream in (photo_id, mask_id, depth_id):
+            if upstream:
+                self.store.verify(upstream)
+        stage = self.store.begin()
+        try:
+            metadata = self.geometry.build_master(
+                depth_npz=self.store.directory(depth_id) / "depth.npz",
+                depth_metadata=depth,
+                parameters=parameters,
+                profile=profile,
+                adjustments=adjustments,
+                stage=stage,
+            )
+            metadata.update(
+                kind="master",
+                parent_id=depth_id,
+                photo_id=photo_id,
+                mask_id=mask_id,
+                depth_id=depth_id,
+                input_method="photo_reconstruction",
+                visual_review="pending",
+                manufacturing_validated=False,
+            )
+            for upstream in (photo_id, mask_id, depth_id):  # 发布前复验上游未被篡改
+                if upstream:
+                    self.store.verify(upstream)
             published = self.store.publish(stage, metadata)
             return RevisionSummary.from_metadata(published)
         except BaseException:

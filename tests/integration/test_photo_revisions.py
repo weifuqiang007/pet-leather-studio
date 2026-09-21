@@ -1,7 +1,6 @@
 """PH07：照片链修订可追溯、篡改拒绝；mold 接缝（kind 分派、input_method 继承、旧 OBJ 兼容）。"""
 
 import json
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -10,15 +9,27 @@ from photo_stubs import StubInference, StubRegistry, make_mask_png, make_photo_p
 
 from pet_leather_studio.application.mold_workbench import MoldWorkbench
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench
+from pet_leather_studio.domain.errors import ResourceMissingError
 from pet_leather_studio.domain.molds import MoldParameters
-from pet_leather_studio.domain.photo_relief import MaskMethod
+from pet_leather_studio.domain.photo_relief import HeightMode, MaskMethod, ReliefParameters
+from pet_leather_studio.infrastructure.photo_geometry import PhotoGeometry
 from pet_leather_studio.infrastructure.photo_io import PhotoIO
+from pet_leather_studio.infrastructure.reference_profile import ReferenceProfileStore
 from pet_leather_studio.infrastructure.revisions import RevisionStore
+
+MASTER_PARAMETERS = ReliefParameters(width_mm=40.0, depth_mm=1.5, base_thickness_mm=2.0)
 
 
 def build_photo_service(root: Path, mode: str = "ok") -> tuple[RevisionStore, PhotoWorkbench]:
     store = RevisionStore(root)
-    return store, PhotoWorkbench(store, PhotoIO(), StubInference(mode), StubRegistry())
+    return store, PhotoWorkbench(
+        store,
+        PhotoIO(),
+        StubInference(mode),
+        StubRegistry(),
+        PhotoGeometry(),
+        ReferenceProfileStore(root.parent / "profiles"),
+    )
 
 
 def build_chain(tmp_path: Path, mode: str = "ok") -> tuple[RevisionStore, PhotoWorkbench, dict]:
@@ -95,10 +106,67 @@ def test_estimate_depth_rejects_tampered_upstream(tmp_path: Path, target: str) -
         stream.write(b"\x00tamper")
 
     with pytest.raises(ValueError, match="文件已变化"):
-        PhotoWorkbench(store, PhotoIO(), StubInference(), StubRegistry()).estimate_depth(
-            chain["photo"].revision_id, chain["mask"].revision_id
-        )
+        PhotoWorkbench(
+            store,
+            PhotoIO(),
+            StubInference(),
+            StubRegistry(),
+            PhotoGeometry(),
+            ReferenceProfileStore(tmp_path / "profiles"),
+        ).estimate_depth(chain["photo"].revision_id, chain["mask"].revision_id)
     assert len(store.history()) == 3  # 校验失败不发布
+
+
+def test_build_master_publishes_real_master_revision(tmp_path: Path) -> None:
+    store, service, chain = build_chain(tmp_path)
+    depth_id = chain["depth"].revision_id
+    master = service.build_master(depth_id, MASTER_PARAMETERS)
+
+    manifest = store.get(master.revision_id)
+    assert manifest["kind"] == "master"
+    assert manifest["parent_id"] == depth_id
+    assert manifest["photo_id"] == chain["photo"].revision_id
+    assert manifest["mask_id"] == chain["mask"].revision_id
+    assert manifest["depth_id"] == depth_id
+    assert manifest["input_method"] == "photo_reconstruction"
+    assert manifest["visual_review"] == "pending"  # 由用户在 GUI 勾选，不自动置通过
+    assert manifest["manufacturing_validated"] is False
+    assert manifest["algorithm"] == "photo-relief-master-v1"
+    assert {"master.vtp", "preview.vtp", "master.obj", "master.stl", "heightfield.npz"} <= set(
+        manifest["files"]
+    )
+    store.verify(master.revision_id)  # 发布产物 hash 完整
+    assert store.get()["id"] == master.revision_id  # active 前移
+
+
+def test_build_master_rejects_tampered_depth(tmp_path: Path) -> None:
+    store, service, chain = build_chain(tmp_path)
+    with (store.directory(chain["depth"].revision_id) / "depth.npz").open("ab") as stream:
+        stream.write(b"\x00tamper")
+    with pytest.raises(ValueError, match="文件已变化"):
+        service.build_master(chain["depth"].revision_id, MASTER_PARAMETERS)
+    assert len(store.history()) == 3  # 校验失败不发布 master
+    assert store.get()["id"] == chain["depth"].revision_id  # active 不变
+
+
+def test_build_master_rejects_non_depth_parent(tmp_path: Path) -> None:
+    _, service, chain = build_chain(tmp_path)
+    with pytest.raises(ValueError, match="不是 depth"):
+        service.build_master(chain["photo"].revision_id, MASTER_PARAMETERS)
+
+
+def test_build_master_ratio_mode_requires_loadable_profile(tmp_path: Path) -> None:
+    store, service, chain = build_chain(tmp_path)
+    parameters = ReliefParameters(
+        width_mm=40.0,
+        height_mode=HeightMode.REFERENCE_RATIO,
+        profile_id="ref-missing000000000",
+        depth_mm=1.5,
+        base_thickness_mm=2.0,
+    )
+    with pytest.raises(ResourceMissingError, match="不存在"):
+        service.build_master(chain["depth"].revision_id, parameters)
+    assert len(store.history()) == 3  # 标定缺失时拒绝该模式，不发布
 
 
 class FakeGeometry:
@@ -113,14 +181,21 @@ class FakeGeometry:
 
 def test_mold_seam_rejects_photo_chain_and_inherits_input_method(tmp_path: Path) -> None:
     store = RevisionStore(tmp_path / "proj")
-    photos = PhotoWorkbench(store, PhotoIO(), StubInference(), StubRegistry())
+    photos = PhotoWorkbench(
+        store,
+        PhotoIO(),
+        StubInference(),
+        StubRegistry(),
+        PhotoGeometry(),
+        ReferenceProfileStore(tmp_path / "profiles"),
+    )
     molds = MoldWorkbench(store, FakeGeometry())
 
     photo = photos.import_photo(make_photo_png(tmp_path / "pet.png"))
     mask = photos.save_mask(
         photo.revision_id, make_mask_png(tmp_path / "mask.png"), MaskMethod.MANUAL
     )
-    photos.estimate_depth(photo.revision_id, mask.revision_id)  # active = depth
+    depth = photos.estimate_depth(photo.revision_id, mask.revision_id)  # active = depth
     for revision_id in (None, photo.revision_id, mask.revision_id):
         if revision_id is not None:
             store.activate(revision_id)
@@ -128,27 +203,16 @@ def test_mold_seam_rejects_photo_chain_and_inherits_input_method(tmp_path: Path)
             molds.generate(MoldParameters(accept_top_projection=True))
 
     # 旧 OBJ 导入路径（source_import）保持原行为
-    master = molds.import_master(Path("unused"))
+    imported = molds.import_master(Path("unused"))
     mold = molds.generate(MoldParameters(accept_top_projection=True))
     assert store.get(mold["id"])["input_method"] == "source_import"
-    assert store.get(mold["id"])["master_id"] == master["id"]
+    assert store.get(mold["id"])["master_id"] == imported["id"]
 
-    # photo_reconstruction 母版（P2 由 depth 生成；此处验证继承机制本身）
-    stage = store.begin()
-    shutil.copyfile(store.directory(master["id"]) / "master.vtp", stage / "master.vtp")
-    reconstructed = store.publish(
-        stage,
-        {
-            "kind": "master",
-            "parent_id": mask.revision_id,
-            "input_method": "photo_reconstruction",
-            "visual_review": "pending",
-        },
-    )
-    store.activate(reconstructed["id"])
+    # photo_reconstruction 母版：P2 真实 build_master 由 depth 修订生成
+    reconstructed = photos.build_master(depth.revision_id, MASTER_PARAMETERS)
     photo_mold = molds.generate(MoldParameters(accept_top_projection=True))
     assert store.get(photo_mold["id"])["input_method"] == "photo_reconstruction"
-    assert store.get(photo_mold["id"])["master_id"] == reconstructed["id"]
+    assert store.get(photo_mold["id"])["master_id"] == reconstructed.revision_id
 
 
 def test_mold_generate_rejects_unknown_kind(tmp_path: Path) -> None:

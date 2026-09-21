@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from pet_leather_studio.domain.photo_relief import MaskMethod
+from pet_leather_studio.domain.photo_relief import (
+    LocalAdjustment,
+    MaskMethod,
+    ReferenceProfile,
+    ReliefParameters,
+)
 
 
 class PhotoIOPort(Protocol):
@@ -33,3 +38,25 @@ class DepthInferencePort(Protocol):
 
 class ModelRegistryPort(Protocol):
     def locate(self, model_id: str | None) -> Path: ...
+
+
+class ReliefGeometryPort(Protocol):
+    def build_master(
+        self,
+        depth_npz: Path,
+        depth_metadata: Mapping[str, Any],
+        parameters: ReliefParameters,
+        profile: ReferenceProfile | None,
+        adjustments: Sequence[LocalAdjustment],
+        stage: Path,
+    ) -> dict[str, Any]:
+        """受控浮雕化并导出母版修订文件；校验失败必须抛错（不产出成功修订）。"""
+        ...
+
+
+class ReferenceProfilePort(Protocol):
+    def load(self, profile_id: str) -> ReferenceProfile:
+        """按 id 载入标定；缺失/损坏须显式报错（不得静默回退）。"""
+        ...
+
+    def list_profiles(self) -> list[ReferenceProfile]: ...
