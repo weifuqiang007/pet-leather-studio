@@ -15,13 +15,20 @@ environment.apply_local_env()
 
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench  # noqa: E402
 from pet_leather_studio.bootstrap.environment import data_root  # noqa: E402
-from pet_leather_studio.domain.photo_relief import MaskMethod  # noqa: E402
+from pet_leather_studio.domain.photo_relief import (  # noqa: E402
+    LocalAdjustment,
+    MaskMethod,
+    ReliefParameters,
+)
 from pet_leather_studio.infrastructure.photo_geometry import PhotoGeometry  # noqa: E402
 from pet_leather_studio.infrastructure.photo_io import PhotoIO  # noqa: E402
 from pet_leather_studio.infrastructure.reference_profile import (  # noqa: E402
     ReferenceProfileStore,
 )
 from pet_leather_studio.infrastructure.revisions import RevisionStore  # noqa: E402
+from pet_leather_studio.presentation.height_adjust_dialog import (  # noqa: E402
+    HeightAdjustDialog,
+)
 from pet_leather_studio.presentation.photo_panel import (  # noqa: E402
     VIEW_3D,
     VIEW_DEPTH,
@@ -208,4 +215,166 @@ def test_start_job_during_pending_cancel_is_ignored(qtbot, tmp_path: Path) -> No
     window.start_job(["import-photo", str(png)])  # 取消结束后可正常起新任务
     qtbot.waitUntil(lambda: window.process is None, timeout=30000)
     assert "完成" in window.status.text()
+    window.close()
+
+
+def _write_reference_obj(path: Path) -> None:
+    """合成参考 OBJ：0 底 + 4mm 方凸 + 6mm 尖点（percentile 99 裁掉尖点）。"""
+    import trimesh
+
+    xs = np.linspace(0.0, 10.0, 11)
+    xx, yy = np.meshgrid(xs, xs)
+    zz = np.zeros_like(xx)
+    zz[4:7, 4:7] = 4.0
+    zz[5, 5] = 6.0
+    index = (np.arange(10)[:, None] * 11 + np.arange(10)).ravel()
+    b, c, d = index + 1, index + 12, index + 11
+    faces = np.vstack([np.column_stack([index, b, c]), np.column_stack([index, c, d])])
+    points = np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+    trimesh.Trimesh(points, faces, process=False).export(path)
+
+
+def test_master_form_ratio_requires_profile(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """P2：ratio 模式未选标定时拒绝生成（不暗用参考比例），显式深度旋钮禁用。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(depth_id))
+    window.height_mode.setCurrentIndex(1)  # 参考比例
+    assert not window.master_depth.isEnabled()
+    assert "先完成参考标定" in window.ratio_hint.text()
+
+    warned: list[tuple[str, str]] = []
+
+    def fake_warning(parent, title, text, *args, **kwargs):
+        warned.append((title, text))
+        return None
+
+    monkeypatch.setattr(
+        "pet_leather_studio.presentation.photo_panel.QMessageBox.warning", fake_warning
+    )
+    window.build_master()
+    assert warned and "参考比例缺标定" in warned[0][0]
+    assert window.process is None  # 未起任务
+    window.close()
+
+
+def test_build_master_argument_assembly(qtbot, tmp_path: Path) -> None:
+    """P2：生成母版的 CLI 参数由表单与待提交局部调整拼装（含 --adjustment）。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(depth_id))
+    window.master_width.setValue(42.5)
+    window.master_depth.setValue(1.25)
+    window.smoothing.setValue(1.5)
+    window.base_thickness.setValue(4.0)
+    window._pending_adjustments = [
+        LocalAdjustment(
+            label="鼻尖", region_png="/tmp/region.png", offset_mm=0.5, transition_mm=2.0
+        )
+    ]
+    captured: list[list[str]] = []
+
+    def capture(arguments):
+        captured.append(list(arguments))
+
+    window.start_job = capture
+    window.build_master()
+    assert captured == [
+        [
+            "build-master",
+            "--depth",
+            depth_id,
+            "--width-mm",
+            "42.5",
+            "--height-mode",
+            "explicit_depth",
+            "--depth-mm",
+            "1.25",
+            "--base-mm",
+            "4",
+            "--smoothing-mm",
+            "1.5",
+            "--adjustment",
+            "/tmp/region.png:0.5:2:鼻尖",
+        ]
+    ]
+    window.close()
+
+
+def test_master_view_dispatch(qtbot, tmp_path: Path) -> None:
+    """P2：photo_reconstruction 母版 → preview.vtp 渲染 + 母版详情；上游视图可达。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    master = service.build_master(
+        depth_id, ReliefParameters(width_mm=40.0, depth_mm=1.5, base_thickness_mm=2.0)
+    )
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitUntil(lambda: window.viewer.renderer is not None)
+    window.versions.setCurrentIndex(window.versions.findData(master.revision_id))
+    window.view.setCurrentText(VIEW_3D)
+    assert len(window.viewer.renderer.actors) > 0
+    text = window.details.toPlainText()
+    assert "母版" in text and "photo_reconstruction" in text
+    assert "正面起伏" in text and "重读校验" in text
+
+    window.view.setCurrentText(VIEW_PHOTO)  # 母版上游链可达
+    assert len(window.viewer.renderer.actors) > 0
+    window.close()
+
+
+def test_height_adjust_dialog_regions_and_undo(qtbot) -> None:
+    """P2：区域刷选 + 偏移/过渡参数 + 撤销；空区域在结果中丢弃。"""
+    base = np.zeros((32, 40, 3), dtype=np.uint8)
+    dialog = HeightAdjustDialog(base)
+    qtbot.addWidget(dialog)
+    dialog.offset_spin.setValue(0.75)
+    dialog.transition_spin.setValue(3.0)
+    dialog.canvas.buffer.snapshot()
+    dialog.canvas.buffer.paint_disk(20, 16, 5, 255)
+    regions = dialog.regions
+    assert len(regions) == 1
+    mask, offset, transition, label = regions[0]
+    assert (mask > 127).sum() > 0
+    assert offset == 0.75 and transition == 3.0
+
+    dialog._add_region()  # 第二区域：负向偏移
+    dialog.offset_spin.setValue(-1.0)
+    dialog.canvas.buffer.snapshot()
+    dialog.canvas.buffer.paint_disk(5, 5, 3, 255)
+    assert len(dialog.regions) == 2
+    assert dialog.regions[1][1] == -1.0
+
+    dialog.canvas.buffer.undo()  # 撤销第二区域笔画 → 变空被丢弃
+    assert len(dialog.regions) == 1
+
+
+def test_excluded_points_view_and_ratio_hint(qtbot, tmp_path: Path) -> None:
+    """P2：标定下拉 → 排除点红点视图 + 被裁统计；ratio 换算提示实时显示。"""
+    from pet_leather_studio.infrastructure.reference_profile import measure_reference
+
+    obj = tmp_path / "reference.obj"
+    _write_reference_obj(obj)
+    profile = measure_reference(obj, percentile=99.0)
+    store_dir = tmp_path / "profiles"
+    ReferenceProfileStore(store_dir).save(profile)
+
+    store, service, depth_id = _build_chain(tmp_path)  # profiles 根同为 tmp/profiles
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitUntil(lambda: window.viewer.renderer is not None)
+    index = window.profile_combo.findData(profile.profile_id)
+    assert index >= 0
+    window.profile_combo.setCurrentIndex(index)
+    window.show_excluded_points()
+    assert len(window.viewer.renderer.actors) > 0
+    text = window.details.toPlainText()
+    assert "排除点" in text and "被裁 1 点" in text
+    assert "真实最高 6.0" in text
+
+    window.height_mode.setCurrentIndex(1)
+    assert "⇒ 深度" in window.ratio_hint.text()
     window.close()
