@@ -346,3 +346,7 @@ F1–F4 全部修复；逐项处置与证据见 `docs/reports/photo-relief-P1.md
 - F4 标签更正：删除被移动过的 `photo-relief-p1`，拆分唯一标签 `photo-relief-p1-original`（93f87df）/ `photo-relief-p1-r1`（caaf5d3）/ `photo-relief-p1-r2`（本轮提交）；旧标签未动，均未推送。
 - 文档更正：R6 恢复原义（lint/format + GUI 联测，清单退化仅其一）；核验命令统一为 `pytest tests -m 'not real_model'`（预期 107 = 无模型 97 + GUI 10），旧 26 项中 25 项非 GUI 含于其中、GUI 1 项由 GUI 套件覆盖；`experiments/` 脚本实际入 Git（仅 `out/` 产物 gitignored）；阅读入口统一为第三轮 `20260921-100609`。
 - 本轮计数：ruff check / format（66 文件）/ mypy 通过；无模型 97 + GUI 10 = 107 通过；真实模型 2 项上轮通过、本轮未重跑（改动不触及推理内核）。
+
+### 第三轮独立验收（Codex，2026-09-21，4ed7c05）
+
+Ruff/format/mypy、97 项非模型、10 项 GUI、2 项真实模型测试全部通过；新三样例九个修订 hash 通过，取消与独立版本标签问题关闭。剩余：损坏 selected.json 仍静默选择其他模型；蒙版叠加没有正确 alpha 混合，主体阈值掩码仍需区分白毛/水印/背景，IoU 自洽不能代替正确性。详见 [第三轮验收报告](reports/photo-relief-P1-reacceptance-4ed7c05.md)。工程主流程通过回归，样例效果仍待修正与评审。
