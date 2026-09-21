@@ -1,17 +1,24 @@
-"""PH03/PH04：深度语义适配、无效域隔离、Y 行翻转、起伏上限误差与参数边界。"""
+"""PH03/PH04/PH05：深度语义适配、无效域隔离、Y 行翻转、起伏上限误差、
+同比例参考换算、受控浮雕化数值管线与局部调整边界。"""
 
 import numpy as np
 import pytest
 
 from pet_leather_studio.algorithms.relief_height import (
+    apply_local_adjustments,
     cap_to_mm,
     clamp_cap,
+    controlled_heights_mm,
     image_to_geometry_rows,
+    ratio_depth_mm,
+    smooth_valid_aware,
     unit_height,
 )
 from pet_leather_studio.domain.photo_relief import (
     DepthSemantics,
     HeightMode,
+    LocalAdjustment,
+    ReferenceProfile,
     ReliefParameters,
 )
 
@@ -123,6 +130,7 @@ def test_relief_parameters_validation_matrix() -> None:
         "profile_id": None,
         "smoothing_radius_mm": None,
         "detail_strength": 0.0,
+        "base_thickness_mm": 3.0,
     }
     ReliefParameters(**base).validate()  # 默认值合法
     for bad in (
@@ -134,9 +142,187 @@ def test_relief_parameters_validation_matrix() -> None:
         {"smoothing_radius_mm": 0.0},
         {"smoothing_radius_mm": 100.0},
         {"detail_strength": -0.1},
+        {"base_thickness_mm": 0.5},
+        {"base_thickness_mm": 31.0},
     ):
         with pytest.raises(ValueError):
             ReliefParameters(**(base | bad)).validate()
     ReliefParameters(
         **(base | {"height_mode": HeightMode.REFERENCE_RATIO, "profile_id": "calibrated-v1"})
     ).validate()
+
+
+def test_local_adjustment_validation_matrix() -> None:
+    base = {"label": "鼻尖", "region_png": "adjust-0.png", "offset_mm": 0.5, "transition_mm": 2.0}
+    LocalAdjustment(**base).validate()
+    for bad in (
+        {"label": " "},
+        {"region_png": ""},
+        {"offset_mm": -20.5},
+        {"offset_mm": 20.5},
+        {"transition_mm": 51.0},
+    ):
+        with pytest.raises(ValueError):
+            LocalAdjustment(**(base | bad)).validate()
+
+
+def _reference_profile(**overrides: float) -> ReferenceProfile:
+    """有效参考起伏 2.879 / 参考宽度 19.283（SubTool3 历史数字）的合成标定。"""
+    values: dict[str, object] = {
+        "profile_id": "ref-test0000000000ff",
+        "source_name": "synthetic.obj",
+        "source_path": "/synthetic/synthetic.obj",
+        "source_sha256": "0" * 64,
+        "source_units": "assumed_mm",
+        "region": (0.0, 19.283, 0.0, 19.0),
+        "region_basis": "full_xy_bounds_v1",
+        "datum_method": "min_z_plane",
+        "datum_z": -0.771,
+        "percentile": 99.0,
+        "exclusion_fraction": 0.01,
+        "effective_relief_mm": 2.879,
+        "reference_width_mm": 19.283,
+        "true_min_z": -0.771,
+        "true_max_z": 2.107,
+        "true_excess_mm": 0.0,
+        "excluded_point_count": 0,
+        "bbox_z_span": 2.878,
+        "bbox_z_span_ratio": 0.1493,
+        "measurement_algorithm": "reference-profile-v1",
+        "created_at": "2026-09-21T00:00:00+00:00",
+    }
+    return ReferenceProfile(**(values | overrides))  # type: ignore[arg-type]
+
+
+def test_ratio_depth_mm_value_and_range() -> None:
+    depth = ratio_depth_mm(2.879, 19.283, 60.0)
+    assert depth == pytest.approx(2.879 / 19.283 * 60.0, rel=1e-12)
+    # 参考部位与目标部位不对应（换算越界）：提示改显式深度，不自动缩放
+    with pytest.raises(ValueError, match="explicit_depth"):
+        ratio_depth_mm(2.879, 19.283, 300.0)
+    with pytest.raises(ValueError, match="正的有限值"):
+        ratio_depth_mm(2.879, 0.0, 60.0)
+
+
+def test_smooth_valid_aware_keeps_valid_edge_undragged() -> None:
+    """归一化卷积：常量场在有效边缘不被无效像素拖低（朴素卷积会向 0 塌陷）。"""
+    unit = np.full((20, 20), 0.5)
+    valid = np.ones((20, 20), dtype=bool)
+    valid[:, :10] = False  # 左半无效
+    smoothed = smooth_valid_aware(unit, valid, sigma_px=2.0)
+    np.testing.assert_allclose(smoothed[valid], 0.5, atol=1e-9)
+    assert np.all(smoothed[~valid] == 0.0)
+
+
+def test_controlled_heights_report_records_unit_conversion() -> None:
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    valid = np.ones((12, 61), dtype=bool)
+    heights, report = controlled_heights_mm(
+        ramp,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0, smoothing_radius_mm=2.0),
+    )
+    assert report["dx_mm"] == pytest.approx(1.0)  # 60 mm / (61-1) 采样
+    assert report["smoothing"]["sigma_px"] == pytest.approx(2.0)  # 2 mm / 1 mm
+    assert report["smoothing"]["radius_mm"] == pytest.approx(2.0)
+    assert report["depth_source"] == "explicit_depth"
+    assert report["resolved_depth_mm"] == pytest.approx(2.0)
+    assert heights.min() >= 0.0 and heights.max() <= 2.0 + 1e-12
+
+
+def test_controlled_heights_reference_ratio_uses_profile() -> None:
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    valid = np.ones((12, 61), dtype=bool)
+    profile = _reference_profile()
+    heights, report = controlled_heights_mm(
+        ramp,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(
+            width_mm=60.0, height_mode=HeightMode.REFERENCE_RATIO, profile_id=profile.profile_id
+        ),
+        profile=profile,
+    )
+    assert report["depth_source"] == "reference_ratio"
+    assert report["profile_id"] == profile.profile_id
+    assert report["resolved_depth_mm"] == pytest.approx(2.879 / 19.283 * 60.0)
+    assert heights.max() == pytest.approx(2.879 / 19.283 * 60.0, abs=1e-9)
+
+
+def test_controlled_heights_reference_ratio_requires_profile() -> None:
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    with pytest.raises(ValueError, match="必须提供已标定"):
+        controlled_heights_mm(
+            ramp,
+            np.ones((12, 61), dtype=bool),
+            DepthSemantics.RELATIVE_LARGER_NEARER,
+            ReliefParameters(
+                width_mm=60.0, height_mode=HeightMode.REFERENCE_RATIO, profile_id="ref-x"
+            ),
+        )
+
+
+def test_local_adjustment_stays_local_and_spike_free() -> None:
+    """合同验收：调整局部不得拔高整个主体、不产生尖峰。"""
+    heights = np.zeros((40, 40))
+    region = np.zeros((40, 40))
+    region[15:25, 15:25] = 1.0
+    adjusted = apply_local_adjustments(heights, [(region, 1.0, 2.0)], dx_mm=1.0)
+    assert adjusted[19, 19] >= 0.9  # 刷选区内基本到位
+    assert adjusted[0:7, :].max() < 1e-3  # 3σ（6px）再外 1px 处不受影响
+    assert adjusted[35:, :].max() < 1e-3
+    # 过渡带斜率有界（高斯平滑步进 ≈ 1/(σ√(2π)) ≈ 0.2 mm/px；尖峰会是整幅 1.0）
+    assert np.abs(np.diff(adjusted, axis=0)).max() <= 0.25
+
+
+def test_local_adjustment_clamp_report_surfaces() -> None:
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    region = np.zeros((12, 61))
+    region[8:12, :] = 1.0  # 高段整体 +5 mm，必然越过 2 mm 上限
+    _, report = controlled_heights_mm(
+        ramp,
+        np.ones((12, 61), dtype=bool),
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0),
+        adjustments=[(region, 5.0, 1.0)],
+    )
+    assert report["clamp"]["clamped_points"] > 0
+    assert report["clamp"]["max_before_mm"] > 2.0  # 改动范围如实展示，不静默截断
+    assert report["clamp"]["cap_mm"] == pytest.approx(2.0)
+    assert report["adjustments_count"] == 1
+
+
+def test_local_adjustment_negative_offset_clamped_at_datum() -> None:
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    region = np.zeros((12, 61))
+    region[0:3, :] = 1.0  # 低段（高度≈0）向下挖，不得挖穿浮雕基准 0
+    heights, report = controlled_heights_mm(
+        ramp,
+        np.ones((12, 61), dtype=bool),
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0),
+        adjustments=[(region, -5.0, 1.0)],
+    )
+    assert heights.min() >= 0.0
+    assert report["clamp"]["clamped_below_points"] > 0
+
+
+def test_controlled_heights_deterministic_rerun() -> None:
+    """合同：尺寸缩放及局部约束可重跑——同输入两次调用逐位一致。"""
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    valid = np.ones((12, 61), dtype=bool)
+    region = np.zeros((12, 61))
+    region[4:8, 10:50] = 1.0
+    args = (
+        ramp,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0, smoothing_radius_mm=1.5),
+        None,
+        [(region, 0.75, 2.0)],
+    )
+    heights_a, report_a = controlled_heights_mm(*args)
+    heights_b, report_b = controlled_heights_mm(*args)
+    np.testing.assert_array_equal(heights_a, heights_b)
+    assert report_a["clamp"] == report_b["clamp"] and report_a["smoothing"] == report_b["smoothing"]

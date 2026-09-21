@@ -15,6 +15,13 @@ from typing import Any
 WIDTH_MM_RANGE = (5.0, 300.0)
 DEPTH_MM_RANGE = (0.05, 20.0)
 SMOOTHING_RADIUS_MM_RANGE = (0.0, 50.0)
+# 母版加底实体的底板厚度（对齐模具 backing_mm 工程口径；浮雕基准 0，底板另计）
+BASE_THICKNESS_MM_RANGE = (1.0, 30.0)
+# 局部结构调整：偏移与过渡半径（mm；过渡平滑即防尖峰）
+LOCAL_OFFSET_MM_RANGE = (-20.0, 20.0)
+TRANSITION_MM_RANGE = (0.0, 50.0)
+# 参考标定稳健统计默认百分位（仅在选定有效正面区域与基准之后应用）
+DEFAULT_PERCENTILE = 99.0
 # 深度发布时的最小有效覆盖率（工程阈值，PH04：面积不足明确报错）
 MIN_DEPTH_VALID_COVERAGE = 0.01
 
@@ -69,6 +76,118 @@ class RevisionSummary:
 
 
 @dataclass(frozen=True)
+class ReferenceProfile:
+    """参考标定结果（PH05）：显式口径的有效浮雕起伏，非包围盒 Z 跨度。
+
+    分位数仅是选定"有效正面区域/基准"之后的稳健统计；真实极值必须保留
+    （true_excess_mm 即被百分位裁掉的最高点超出量，界面须标出供核查）。
+    bbox_z_span / bbox_z_span_ratio 分开记录、仅作历史对照，永不自动套用。
+    全部字段为标量（domain 仅标准库）。
+    """
+
+    profile_id: str
+    source_name: str
+    source_path: str
+    source_sha256: str
+    source_units: str  # OBJ 无单位，假设必须显式记录（如 assumed_mm）
+    region: tuple[float, float, float, float]  # xmin, xmax, ymin, ymax（源单位）
+    region_basis: str  # 区域选择口径（如 full_xy_bounds_v1 / cli_override）
+    datum_method: str  # 基准面口径（v1：min_z_plane 区域最低点平面）
+    datum_z: float
+    percentile: float
+    exclusion_fraction: float
+    effective_relief_mm: float  # 基准面 → 分位裁剪高度 = 有效参考起伏
+    reference_width_mm: float  # 区域 X 跨度（同比例公式的"明确参考宽度"）
+    true_min_z: float
+    true_max_z: float
+    true_excess_mm: float
+    excluded_point_count: int
+    bbox_z_span: float
+    bbox_z_span_ratio: float
+    measurement_algorithm: str
+    created_at: str
+
+    def validate(self) -> None:
+        if not self.profile_id.strip():
+            raise ValueError("profile_id 不能为空")
+        if not self.datum_method.strip() or not self.region_basis.strip():
+            raise ValueError("region_basis 与 datum_method 必须显式记录口径")
+        if not math.isfinite(self.percentile) or not 0.0 < self.percentile <= 100.0:
+            raise ValueError("percentile 必须在 (0, 100] 范围")
+        if not math.isfinite(self.exclusion_fraction) or not 0.0 <= self.exclusion_fraction < 1.0:
+            raise ValueError("exclusion_fraction 必须在 [0, 1) 范围")
+        if not math.isfinite(self.effective_relief_mm) or self.effective_relief_mm <= 0.0:
+            raise ValueError("effective_relief_mm 必须为正的有限值")
+        if not math.isfinite(self.reference_width_mm) or self.reference_width_mm <= 0.0:
+            raise ValueError("reference_width_mm 必须为正的有限值")
+        xmin, xmax, ymin, ymax = self.region
+        if not all(math.isfinite(v) for v in self.region) or not xmin < xmax or not ymin < ymax:
+            raise ValueError("region 必须满足 xmin<xmax 且 ymin<ymax")
+        if self.true_excess_mm < 0.0 or self.excluded_point_count < 0:
+            raise ValueError("true_excess_mm / excluded_point_count 不能为负")
+
+    def to_json_dict(self) -> dict[str, Any]:
+        data = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        data["region"] = list(self.region)
+        return data
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> ReferenceProfile:
+        region = data["region"]
+        if not isinstance(region, (tuple, list)) or len(region) != 4:
+            raise ValueError("region 必须是长度 4 的序列（xmin,xmax,ymin,ymax）")
+        profile = cls(
+            profile_id=str(data["profile_id"]),
+            source_name=str(data["source_name"]),
+            source_path=str(data["source_path"]),
+            source_sha256=str(data["source_sha256"]),
+            source_units=str(data["source_units"]),
+            region=(float(region[0]), float(region[1]), float(region[2]), float(region[3])),
+            region_basis=str(data["region_basis"]),
+            datum_method=str(data["datum_method"]),
+            datum_z=float(data["datum_z"]),
+            percentile=float(data["percentile"]),
+            exclusion_fraction=float(data["exclusion_fraction"]),
+            effective_relief_mm=float(data["effective_relief_mm"]),
+            reference_width_mm=float(data["reference_width_mm"]),
+            true_min_z=float(data["true_min_z"]),
+            true_max_z=float(data["true_max_z"]),
+            true_excess_mm=float(data["true_excess_mm"]),
+            excluded_point_count=int(data["excluded_point_count"]),
+            bbox_z_span=float(data["bbox_z_span"]),
+            bbox_z_span_ratio=float(data["bbox_z_span_ratio"]),
+            measurement_algorithm=str(data["measurement_algorithm"]),
+            created_at=str(data["created_at"]),
+        )
+        profile.validate()
+        return profile
+
+
+@dataclass(frozen=True)
+class LocalAdjustment:
+    """局部结构调整输入：刷选区域 PNG + 偏移 + 过渡（合同"参数与区域可撤销"
+    在编辑器快照栈满足；本对象是随 build_master 落入母版修订的持久记录）。"""
+
+    label: str
+    region_png: str  # 单通道 PNG（工作图朝向），>127 视为选中
+    offset_mm: float
+    transition_mm: float
+
+    def validate(self) -> None:
+        if not self.label.strip():
+            raise ValueError("局部调整 label 不能为空")
+        if not self.region_png.strip():
+            raise ValueError("region_png 不能为空")
+        for name, (low, high) in (
+            ("offset_mm", LOCAL_OFFSET_MM_RANGE),
+            ("transition_mm", TRANSITION_MM_RANGE),
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"{name} 必须在 {low}–{high} 范围（单位 mm）")
+
+
+@dataclass(frozen=True)
 class ReliefParameters:
     """浮雕化设计参数（P2 生效；P1 仅使用 explicit_depth 预览子集）。
 
@@ -82,11 +201,13 @@ class ReliefParameters:
     profile_id: str | None = None
     smoothing_radius_mm: float | None = None
     detail_strength: float = 0.0
+    base_thickness_mm: float = 3.0  # 加底实体底板厚度；浮雕基准 0，底板另计
 
     def validate(self) -> None:
         for name, (low, high) in (
             ("width_mm", WIDTH_MM_RANGE),
             ("depth_mm", DEPTH_MM_RANGE),
+            ("base_thickness_mm", BASE_THICKNESS_MM_RANGE),
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or not low <= value <= high:
