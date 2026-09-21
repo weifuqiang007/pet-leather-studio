@@ -31,6 +31,7 @@ _LOCAL_DIR_NAMES: tuple[str, ...] = (
     "runtime/logs",
     "runtime/tmp",
     "workspace",
+    "profiles",
 )
 
 

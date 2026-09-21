@@ -17,6 +17,7 @@ models/
 vendor/
 runtime/
 workspace/
+profiles/
 
 # 环境与密钥
 .env
