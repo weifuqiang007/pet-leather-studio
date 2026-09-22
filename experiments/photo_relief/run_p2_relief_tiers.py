@@ -5,8 +5,9 @@
     scripts/dev.sh run --frozen python experiments/photo_relief/run_p2_relief_tiers.py
 
 基准 = PH09 第四轮短毛犬 depth 修订（8a18d7ed…），宽 60mm、基准起伏 2.0mm
-（explicit_depth）、底板 3.0mm、无平滑；三档 = 1.6 / 2.0 / 2.4mm 各生成一张
-母版，记录每档 relief / clamp_report / 重读校验，渲染侧视+斜视对照。
+（explicit_depth）、底板 3.0mm、无平滑、边缘过渡带 2.5mm（P2 复验 R1 默认）；
+三档 = 1.6 / 2.0 / 2.4mm 各生成一张母版，记录每档 relief / clamp_report /
+重读校验，渲染侧视+斜视对照。
 档位只是本脚本的实验参数：产品与 GUI 均无档位控件（合同不引入"档位"概念，
 深度由显式 mm 或参考比例唯一确定）。
 输出 experiments/photo_relief/out/p2-relief-tiers/（gitignored），含 report_data.json；
@@ -32,6 +33,7 @@ TIER_KEY, TIER_PREFIX = "short_hair_dog", "8a18d7ed"
 WIDTH_MM = 60.0
 BASE_DEPTH_MM = 2.0  # 100% 档
 BASE_THICKNESS_MM = 3.0
+FALLOFF_BAND_MM = 2.5  # R1 边缘过渡带（与 run_p2_masters 同形态）
 TIERS = (0.8, 1.0, 1.2)
 
 
@@ -74,6 +76,7 @@ def main() -> int:
             width_mm=WIDTH_MM,
             depth_mm=depth_mm,
             base_thickness_mm=BASE_THICKNESS_MM,
+            falloff_band_mm=FALLOFF_BAND_MM,
         )
         print(f"=== {tier:.0%} 档（depth {depth_mm}mm）→ 母版")
         started = time.time()
@@ -88,6 +91,7 @@ def main() -> int:
                 "elapsed_s": round(time.time() - started, 1),
                 "relief": manifest["relief"],
                 "clamp_report": manifest["clamp_report"],
+                "falloff": manifest["falloff"],
                 "geometry_checks": manifest["geometry_checks"],
                 "files": {
                     name: str(directory / name)
@@ -105,6 +109,7 @@ def main() -> int:
             "width_mm": WIDTH_MM,
             "base_depth_mm": BASE_DEPTH_MM,
             "base_thickness_mm": BASE_THICKNESS_MM,
+            "falloff_band_mm": FALLOFF_BAND_MM,
         },
         "tiers": results,
     }

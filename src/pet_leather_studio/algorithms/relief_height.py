@@ -148,6 +148,49 @@ def apply_local_adjustments(
     return heights
 
 
+def edge_falloff(
+    heights_mm: np.ndarray,
+    valid: np.ndarray,
+    band_mm: float,
+    dx_mm: float,
+    dy_mm: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """蒙版边界背景过渡带（P2 复验 R1）：把垂直墙改为平滑落地。
+
+    主体内部高度逐点不变；域外像素取最近有效像素高度，沿带宽 band_mm 按
+    smoothstep 反函数衰减到背景 0（边界处导数为 0，中段最陡 ≈ 1.5×h/band）。
+    不改变 valid 的统计语义（归一化/平滑仍只看有效域）；被抬升的域外范围
+    与最大抬升量记入 report 供 manifest 与界面展示。
+    """
+
+    heights = np.asarray(heights_mm, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    if heights.shape != valid.shape:
+        raise ValueError("heights 与 valid 形状不一致")
+    report: dict[str, Any] = {
+        "band_mm": float(band_mm),
+        "algorithm": "edge-falloff-smoothstep-v1",
+        "raised_points": 0,
+        "max_raised_mm": 0.0,
+        "enabled": False,
+    }
+    if band_mm <= 0.0 or valid.all() or not valid.any():
+        return heights.copy(), report
+    distance, nearest = ndimage.distance_transform_edt(
+        ~valid, sampling=(dy_mm, dx_mm), return_indices=True
+    )
+    edge_heights = heights[nearest[0], nearest[1]]  # 域外像素的最近有效高度
+    t = np.clip(distance / float(band_mm), 0.0, 1.0)
+    decay = 1.0 - (3.0 * t * t - 2.0 * t * t * t)  # smoothstep 反向：d→0 取 1，d=band 取 0
+    raised = (~valid) & (distance <= band_mm)
+    result = heights.copy()
+    result[raised] = edge_heights[raised] * decay[raised]
+    report["enabled"] = True
+    report["raised_points"] = int(raised.sum())
+    report["max_raised_mm"] = float(result[raised].max()) if raised.any() else 0.0
+    return result, report
+
+
 def controlled_heights_mm(
     depth: np.ndarray,
     valid: np.ndarray,
@@ -159,15 +202,16 @@ def controlled_heights_mm(
     """受控浮雕化主数值管线（预览与导出共用，保证 PH10 一致）。
 
     unit_height → 有效域感知平滑 → 起伏上限解析（explicit_depth /
-    reference_ratio）→ cap_to_mm → 局部偏移 → 上下限限幅；返回工作图朝向
-    heights_mm 与 report（mm↔px 换算、上限来源、限幅统计；调用方必须展示
-    限幅对用户操作的改动，不得静默截断）。局部调整不得拔高整个主体：
-    偏移只经高斯过渡作用在刷选区域内。
+    reference_ratio）→ cap_to_mm → 边缘过渡带（主体外平滑落地）→ 局部偏移
+    → 上下限限幅；返回工作图朝向 heights_mm 与 report（mm↔px 换算、上限
+    来源、过渡与限幅统计；调用方必须展示限幅对用户操作的改动，不得静默
+    截断）。局部调整不得拔高整个主体：偏移只经高斯过渡作用在刷选区域内。
     """
     parameters.validate()
     unit = unit_height(depth, valid, semantics)
     ny, nx = unit.shape
     dx_mm = float(parameters.width_mm) / max(nx - 1, 1)
+    dy_mm = dx_mm * ny / max(ny - 1, 1)  # 与 photo_geometry 的 height_mm=width×ny/nx 同口径
     report: dict[str, Any] = {"dx_mm": dx_mm, "grid": [int(ny), int(nx)]}
 
     if parameters.smoothing_radius_mm is not None and parameters.smoothing_radius_mm > 0.0:
@@ -193,6 +237,10 @@ def controlled_heights_mm(
     report["resolved_depth_mm"] = depth_cap
 
     heights = cap_to_mm(unit, depth_cap)
+    heights, falloff = edge_falloff(
+        heights, np.asarray(valid, dtype=bool), parameters.falloff_band_mm, dx_mm, dy_mm
+    )
+    report["falloff"] = falloff
     heights = apply_local_adjustments(heights, adjustments, dx_mm)
     heights, clamp = clamp_cap(heights, depth_cap)
     below = heights < 0.0  # 负向偏移不得挖穿浮雕基准 0（底板另计，不在此补偿）

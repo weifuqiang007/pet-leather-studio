@@ -294,6 +294,8 @@ def test_build_master_argument_assembly(qtbot, tmp_path: Path) -> None:
             "1.25",
             "--base-mm",
             "4",
+            "--falloff-mm",
+            "2.5",
             "--smoothing-mm",
             "1.5",
             "--adjustment",
@@ -319,6 +321,7 @@ def test_master_view_dispatch(qtbot, tmp_path: Path) -> None:
     text = window.details.toPlainText()
     assert "母版" in text and "photo_reconstruction" in text
     assert "正面起伏" in text and "重读校验" in text
+    assert "边缘过渡" in text  # R1：非矩形主体的过渡带统计须展示
 
     window.view.setCurrentText(VIEW_PHOTO)  # 母版上游链可达
     assert len(window.viewer.renderer.actors) > 0

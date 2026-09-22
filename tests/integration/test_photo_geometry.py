@@ -277,3 +277,56 @@ def test_nonfinite_depth_rejected_without_export(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="NaN"):
         _build(tmp_path, corrupt_with_nan=True)
     assert not (tmp_path / "stage" / "master.obj").exists()
+
+
+def test_master_falloff_smooths_nonrectangular_boundary(tmp_path: Path) -> None:
+    """P2 复验 R1：非矩形主体母版——域外过渡带连续落地（无垂直墙）；主体
+    内部与关闭过渡的版本逐位一致；导出几何经 build_master 内建重读校验。"""
+    rows, cols = 24, 48
+    depth = np.repeat(np.linspace(1.0, 11.0, rows)[:, None], cols, axis=1)
+    valid = np.zeros((rows, cols), dtype=bool)
+    valid[4:20, 12:36] = True
+    valid[8:14, 36:42] = True  # L 形外凸：边界含非轴对齐段
+    npz = tmp_path / "depth-irregular.npz"
+    np.savez_compressed(npz, depth=depth.astype(np.float32), valid=valid)
+    band, cap, base = 3.0, 2.0, 2.0
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    metadata = PhotoGeometry().build_master(
+        npz,
+        {"depth_semantics": "relative_larger_nearer"},
+        ReliefParameters(width_mm=24.0, depth_mm=cap, base_thickness_mm=base, falloff_band_mm=band),
+        None,
+        (),
+        stage,
+    )
+    assert metadata["falloff"]["enabled"] is True
+    assert metadata["falloff"]["raised_points"] > 0
+    assert metadata["falloff"]["max_raised_mm"] > 0.0
+    assert metadata["parameters"]["falloff_band_mm"] == pytest.approx(band)
+    assert metadata["geometry_checks"]["top_surface_max_error_mm"] <= GEOM_TOL_MM
+    with np.load(stage / "heightfield.npz") as data:
+        heights, valid_geom = data["heights_mm"], data["valid"]
+
+    stage_off = tmp_path / "stage-off"
+    stage_off.mkdir()
+    PhotoGeometry().build_master(
+        npz,
+        {"depth_semantics": "relative_larger_nearer"},
+        ReliefParameters(width_mm=24.0, depth_mm=cap, base_thickness_mm=base, falloff_band_mm=0.0),
+        None,
+        (),
+        stage_off,
+    )
+    with np.load(stage_off / "heightfield.npz") as off:
+        heights_off = off["heights_mm"]
+    assert (heights_off[~valid_geom] == 0.0).all()  # 旧行为：域外严格为 0（垂直墙来源）
+    np.testing.assert_array_equal(heights[valid_geom], heights_off[valid_geom])  # 主体内部不变
+    assert (heights[~valid_geom] > 0.0).any()  # 过渡带抬升域外近缘
+
+    dx, dy = float(metadata["dx_mm"]), float(metadata["dy_mm"])
+    jump = max(np.abs(np.diff(heights, axis=0)).max(), np.abs(np.diff(heights, axis=1)).max())
+    # 连续性门：单格跳变 ≤ smoothstep 最大斜率 1.5×cap/band×单元尺寸
+    # （旧垂直墙的单格跳变≈cap=2.0 mm）
+    assert jump <= 1.5 * cap / band * max(dx, dy) + 1e-9
+    assert jump < cap

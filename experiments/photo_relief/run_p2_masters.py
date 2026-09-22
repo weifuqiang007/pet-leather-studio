@@ -7,7 +7,8 @@
 
 要点：
 - 复用 PH09 第四轮 workspace/photo-relief-p1/20260921-110433/ 既有 depth 修订，
-  每张生成一张 explicit_depth 母版（60mm 宽 / 2.0mm 起伏 / 3.0mm 底板，无平滑）；
+  每张生成一张 explicit_depth 母版（60mm 宽 / 2.0mm 起伏 / 3.0mm 底板 / 无平滑 /
+  边缘过渡带 2.5mm——P2 复验 R1 后的默认形态，消除蒙版边垂直墙）；
 - 真实参考标定（PH05）：images/test1_result/1_SubTool3.obj——14.93% 包围盒比例的
   来源实物，percentile 99 / min_z_plane / 全 XY 区域（v1 口径），存 app 级 profiles/
   （与 GUI 同一存储，profile_id 确定性、重跑覆盖同一文件）；
@@ -53,7 +54,9 @@ PHOTOS: list[tuple[str, str, str]] = [
     ("猫", "cat", "f5336763"),
     ("长毛犬", "long_hair_dog", "e9009bdb"),
 ]
-MASTER_PARAMETERS = ReliefParameters(width_mm=60.0, depth_mm=2.0, base_thickness_mm=3.0)
+MASTER_PARAMETERS = ReliefParameters(
+    width_mm=60.0, depth_mm=2.0, base_thickness_mm=3.0, falloff_band_mm=2.5
+)
 RATIO_KEY = "short_hair_dog"  # 参考比例全链演示挂在短毛犬上（与 GUI 手测同工程）
 MASTER_FILES = ("master.obj", "master.stl", "master.vtp", "preview.vtp", "heightfield.npz")
 
@@ -109,6 +112,7 @@ def master_record(
         "height_resolution": manifest["height_resolution"],
         "geometry_checks": manifest["geometry_checks"],
         "clamp_report": manifest["clamp_report"],
+        "falloff": manifest["falloff"],
         "warnings": manifest["warnings"],
         "renders": render_master(directory / "preview.vtp", out_dir, tag),
     }
@@ -157,6 +161,7 @@ def main() -> int:
                 height_mode=HeightMode.REFERENCE_RATIO,
                 profile_id=calibration["profile"]["profile_id"],
                 base_thickness_mm=MASTER_PARAMETERS.base_thickness_mm,
+                falloff_band_mm=MASTER_PARAMETERS.falloff_band_mm,
             )
             print(f"=== {key_cn}（{key}）depth {depth_id[:8]} → reference_ratio 母版")
             ratio_result = {

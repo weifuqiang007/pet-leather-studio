@@ -9,6 +9,7 @@ from pet_leather_studio.algorithms.relief_height import (
     cap_to_mm,
     clamp_cap,
     controlled_heights_mm,
+    edge_falloff,
     image_to_geometry_rows,
     ratio_depth_mm,
     smooth_valid_aware,
@@ -144,6 +145,8 @@ def test_relief_parameters_validation_matrix() -> None:
         {"detail_strength": -0.1},
         {"base_thickness_mm": 0.5},
         {"base_thickness_mm": 31.0},
+        {"falloff_band_mm": -0.1},
+        {"falloff_band_mm": 55.0},
     ):
         with pytest.raises(ValueError):
             ReliefParameters(**(base | bad)).validate()
@@ -326,3 +329,88 @@ def test_controlled_heights_deterministic_rerun() -> None:
     heights_b, report_b = controlled_heights_mm(*args)
     np.testing.assert_array_equal(heights_a, heights_b)
     assert report_a["clamp"] == report_b["clamp"] and report_a["smoothing"] == report_b["smoothing"]
+
+
+# ---- P2 复验 R1：蒙版边界背景过渡带（消除垂直墙） ----
+
+
+def test_edge_falloff_off_or_full_valid_is_noop() -> None:
+    """带宽 0 或全域有效：高度场逐位不变（旧行为兼容），report 如实记录未启用。"""
+    heights = np.ones((10, 10))
+    valid = np.zeros((10, 10), dtype=bool)
+    valid[:, 5:] = True
+    off, off_report = edge_falloff(heights, valid, 0.0, dx_mm=1.0, dy_mm=1.0)
+    np.testing.assert_array_equal(off, heights)
+    assert off_report["enabled"] is False and off_report["raised_points"] == 0
+    full, full_report = edge_falloff(heights, np.ones((10, 10), dtype=bool), 3.0, 1.0, 1.0)
+    np.testing.assert_array_equal(full, heights)
+    assert full_report["enabled"] is False
+
+
+def test_edge_falloff_shape_mismatch_rejected() -> None:
+    with pytest.raises(ValueError, match="形状不一致"):
+        edge_falloff(np.ones((4, 4)), np.ones((3, 3), dtype=bool), 2.0, 1.0, 1.0)
+
+
+def test_edge_falloff_constant_subject_lands_smoothly() -> None:
+    """R1 验收门：主体到背景连续过渡——主体内部逐点不变、远离主体单调落地、
+    全域相邻单元高度差不超过 smoothstep 最大斜率（1.5×h/带宽×单元）。"""
+    ny, nx, band, cap = 24, 32, 4.0, 2.0
+    valid = np.zeros((ny, nx), dtype=bool)
+    valid[4:20, 10:22] = True
+    valid[8:14, 22:26] = True  # L 形外凸：边界含非轴对齐段
+    heights = np.where(valid, cap, 0.0)
+    result, report = edge_falloff(heights, valid, band, dx_mm=1.0, dy_mm=1.0)
+
+    assert report["enabled"] is True
+    assert report["raised_points"] > 0
+    # 网格间距 1：最近域外像素 d=1，最大抬升 = cap×(1−smoothstep(1/4)) < cap
+    assert report["max_raised_mm"] == pytest.approx(cap * (1.0 - 0.15625), abs=1e-9)
+    np.testing.assert_array_equal(result[valid], heights[valid])  # 主体内部不变
+    assert result[0, 0] == 0.0 and result[-1, -1] == 0.0  # 远离主体处严格为 0
+    # 距边界 1 单元处 = cap×(1−smoothstep(1/4))，钉住衰减公式
+    assert result[12, 9] == pytest.approx(cap * (1.0 - 0.15625), abs=1e-9)
+    # 沿行从背景趋向主体：高度单调不减（远离主体单调不增）
+    assert np.all(np.diff(result[12, :10]) >= -1e-12)
+    # 连续性门：无任何相邻单元跳变超过平滑落地最大斜率（旧垂直墙=单格跌落整幅 cap）
+    jump = max(np.abs(np.diff(result, axis=0)).max(), np.abs(np.diff(result, axis=1)).max())
+    assert jump <= cap * 1.5 / band + 1e-9
+
+
+def test_controlled_heights_pipeline_order_falloff_then_adjustments() -> None:
+    """管线顺序（R1）：过渡带先于局部调整——刷选区落在域外过渡带时，偏移作用
+    在衰减后的高度上并被最终限幅；report 记录过渡统计。"""
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    valid = np.ones((12, 61), dtype=bool)
+    valid[:, :20] = False  # 左侧背景
+    region = np.zeros((12, 61))
+    region[:, :20] = 1.0  # 过渡带内整体 +0.3 mm（transition=0 即不经高斯）
+    heights, report = controlled_heights_mm(
+        ramp,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0, falloff_band_mm=5.0),
+        adjustments=[(region, 0.3, 0.0)],
+    )
+    assert report["falloff"]["enabled"] is True
+    assert report["falloff"]["band_mm"] == pytest.approx(5.0)
+    assert report["falloff"]["raised_points"] > 0
+    assert heights[:, 18].max() > 0.2  # 域外近缘已高于背景再叠加调整
+    assert heights.max() <= 2.0 + 1e-12  # 调整后仍受上限约束
+
+
+def test_controlled_heights_deterministic_rerun_with_falloff() -> None:
+    """合同"尺寸缩放及局部约束可重跑"延伸：过渡带参与后仍逐位一致。"""
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    valid = np.ones((12, 61), dtype=bool)
+    valid[:4, :] = False
+    args = (
+        ramp,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0, falloff_band_mm=3.0),
+    )
+    heights_a, report_a = controlled_heights_mm(*args)
+    heights_b, report_b = controlled_heights_mm(*args)
+    np.testing.assert_array_equal(heights_a, heights_b)
+    assert report_a["falloff"] == report_b["falloff"]

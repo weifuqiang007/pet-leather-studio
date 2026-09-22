@@ -54,6 +54,7 @@ def parser() -> argparse.ArgumentParser:
     master.add_argument("--profile", default=None)
     master.add_argument("--smoothing-mm", type=float, default=None)
     master.add_argument("--base-mm", type=float, default=3.0)
+    master.add_argument("--falloff-mm", type=float, default=2.5, help="蒙版边缘过渡带宽 mm（0=关）")
     master.add_argument(
         "--adjustment",
         action="append",
@@ -155,6 +156,7 @@ def main() -> int:
                             profile_id=args.profile,
                             smoothing_radius_mm=args.smoothing_mm,
                             base_thickness_mm=args.base_mm,
+                            falloff_band_mm=args.falloff_mm,
                         ),
                         tuple(adjustments),
                     )

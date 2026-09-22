@@ -392,3 +392,7 @@ scripts/dev.sh run --frozen pytest tests -m 'not real_model'
 - PH12/P3（毛流细纹）未开始，`detail_strength=0.0` 不消费；P4 模具采样偏差评估未做（master.vtp→阴阳模集成链路已通，偏差量化属 P4）。
 - 有效正面区域为 v1 口径（full_xy_bounds_v1 + 相机正面假设），交互式区域/基准选择未实现；换口径须重标定。
 - 全部母版 `visual_review=pending`、`manufacturing_validated=false`；真实模型 2 项 P2 未重跑（改动不触及推理内核）。CI Linux 结果以远端实际运行为准。
+
+### R1 复验完成（GLM，2026-09-22）
+
+独立验收（[reports/photo-relief-P2-acceptance-review.md](reports/photo-relief-P2-acceptance-review.md)）判"视觉效果不通过"，必修项为蒙版边垂直墙。同日修复：`algorithms/relief_height.py` 新增 `edge_falloff`（域外带宽内 = 最近有效像素高度 × 1−smoothstep(d/带宽)；默认 `falloff_band_mm=2.5`，0=关；管线位置 cap_to_mm → falloff → 局部调整 → clamp；有效域内部逐位不变），CLI `--falloff-mm` / GUI 表单与母版详情同步。实测三样例 + ratio 跨界单格跳变中位 0.808–4.217 → 0.042–0.315 mm（降 13–26 倍），域内逐位一致；残余最大跳变为输入深度图固有断层（PH12 边界，前后不变）。测试 155 → **161 passed**（+6），ruff/mypy 通过，GUI smoke 复跑 ok。新标签 `photo-relief-p2-r1`（旧标签未动）；详细数据见交付报告"复验记录（R1）"节。

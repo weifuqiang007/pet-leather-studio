@@ -147,3 +147,46 @@ scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-
 ```
 
 `--project` 必须在子命令 `photo` 之前。看什么：历史列表选 kind=master 的修订 → "三维中性预览"出母版实体，详情含正面起伏/加底厚度/重读校验/起伏上限来源；"起伏上限来源"切"参考比例"并选 `1_SubTool3.obj · 起伏 2.68` 标定 → 换算提示实时显示 8.35 mm；"查看参考排除点"画红色被裁点。满意后在界面完成视觉评审勾选（`visual_review` 不由 GLM 代填）。
+
+## 复验记录（R1：蒙版边界背景过渡带，2026-09-22）
+
+独立验收报告 [photo-relief-P2-acceptance-review.md](photo-relief-P2-acceptance-review.md) 结论为"工程链路通过、视觉效果不通过"，必修项：非矩形蒙版边界处主体高度单格跌落至 0（垂直墙）。GLM 数值复核确认该缺陷属实（旧母版域外严格 0，跨界单格跳变中位 0.8–4.2 mm、最大 1.9–6.0 mm），当日修复并复验。
+
+### 修复内容
+
+- `algorithms/relief_height.py` 新增 `edge_falloff(heights_mm, valid, band_mm, dx_mm, dy_mm)`：带宽内域外像素取**最近有效像素**高度（各向异性 EDT，采样 `(dy_mm, dx_mm)`），乘衰减 `1−smoothstep(d/带宽)`（3t²−2t³：边界导数 0，坡面最大斜率 1.5×h/带宽）；带宽外仍严格 0；**有效域内部逐位不变**（统计语义不动，满足验收报告第 5 点）。
+- 管线顺序（验收报告第 3 点）：cap_to_mm → **edge_falloff** → 局部调整 → clamp_cap——刷在过渡带上的偏移作用在衰减后的高度上并受最终限幅。
+- 参数：`ReliefParameters.falloff_band_mm` 默认 **2.5 mm**、范围 (0,50)、**0=关**（逐位等价旧行为）；CLI `--falloff-mm`；GUI 表单"边缘过渡宽度 mm（0=关）"，母版详情新增"边缘过渡"统计行；manifest 新增 `falloff{enabled, band_mm, raised_points, max_raised_mm, algorithm}`。
+- 纵向网格间距 `dy_mm = dx×ny/max(ny−1,1)` 与 photo_geometry 的 height 换算同式；矩形全有效域为 no-op（旧测试零改动通过）。
+
+### 实测（同 depth 修订重跑，修订史 append-only；跳变=恰一端有效的相邻单元 |Δh|）
+
+| 样本 | 跨界跳变旧 p50/p95/max mm | 新 p50/p95/max mm | 域内固有断层 max mm（前→后） |
+| --- | --- | --- | --- |
+| 短毛犬 | 1.010 / 1.325 / 1.427 | **0.076 / 0.560 / 1.126** | 1.212 → 1.212 |
+| 猫 | 0.808 / 1.614 / 1.894 | **0.063 / 0.390 / 1.621** | 1.786 → 1.786 |
+| 长毛犬 | 1.085 / 1.975 / 1.998 | **0.042 / 0.148 / 0.744** | 1.082 → 1.082 |
+| 短毛犬 ratio（8.35 mm） | 4.217 / 5.533 / 5.961 | **0.315 / 2.337 / 4.700** | 5.062 → 5.062 |
+
+跨界中位跳变降 13–26 倍；四样本有效域内部逐位一致（`内部一致=True` 逐项断言）。**残余跨界最大跳变溯源为输入深度图固有断层**（修复前后域内最大跳变完全不变）——属 PH12 输入质量边界（148 px 深度图），非蒙版墙；可用 `smoothing_radius_mm` 缓解，不在 R1 范围。
+
+新母版修订（渲染/实体在 `workspace/…/revisions/<id>/` 与 `experiments/photo_relief/out/`，同前节路径）：
+
+| 母版 | master 修订 | 域外抬升点 | 最大抬升 mm | 体积 mm³ |
+| --- | --- | --- | --- | --- |
+| 短毛犬 explicit | `d614f21d…` | 2045 | 1.326 | 12810.6 |
+| 猫 explicit | `d9a7bf42…` | 2325 | 1.759 | 14072.8 |
+| 长毛犬 explicit | `337a74cb…` | 4444 | 1.922 | 9638.2 |
+| 短毛犬 ratio | `611ffd12…` | 2045 | 5.536 | 19196.5 |
+| 档位 80/100/120% | `a54e5554…` / `f4ef2c74…` / `d0af9eea…` | 2045 | 1.060 / 1.326 / 1.591 | 12408.5 / 12810.6 / 13212.8 |
+
+### 验证
+
+- 测试 +6（unit 5 + integration 1）：衰减公式钉扎（距边界 1 单元 = cap×(1−smoothstep(1/4))）、远离主体单调落地、全域单格跳变 ≤1.5×cap/带宽×单元、主体内部逐位不变、管线顺序（过渡带先于局部调整）、重跑逐位一致、L 形非矩形全链（band 开/关的域内逐位一致 + 域外近缘 >0）。**161 passed, 2 deselected**（无模型 146 + GUI 15；P2 交付 155 → +6，旧测试零删除）；ruff check / format / mypy 通过；真实模型 2 项未重跑（R1 不触及推理内核）。
+- GUI 真机 smoke 复跑 ok（`runtime/gui_p2_smoke.py`，证据截图已更新至 `runtime/evidence/photo-p2/`）：explicit/ratio 母版三维视图 + 详情含"边缘过渡"统计行。
+- 渲染目视（`out/p2-masters/short_hair_dog/short_hair_dog-side-lightkit.png`）：侧视轮廓两侧斜坡落地、无竖直台阶、顶面无孤立尖刺；斜视图主体边缘暗环为斜坡受光阴影，非垂直墙（与上表数值一致）。
+
+### 版本
+
+- R1 提交见 `git log` 本条（fix(p2-r1)）；新标签 **`photo-relief-p2-r1`**（只新增；`photo-relief-p2` 及更早标签未动，已推送远端）。
+- 母版 `visual_review=pending` 不变：过渡带形态（带宽 2.5 mm 是否合意）属视觉评审，须用户在 GUI 亲自查看后勾选。

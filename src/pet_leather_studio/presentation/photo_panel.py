@@ -43,7 +43,9 @@ from pet_leather_studio.application.photo_workbench import PhotoWorkbench
 from pet_leather_studio.domain.errors import ResourceMissingError
 from pet_leather_studio.domain.photo_relief import (
     BASE_THICKNESS_MM_RANGE,
+    DEFAULT_FALLOFF_BAND_MM,
     DEPTH_MM_RANGE,
+    FALLOFF_BAND_MM_RANGE,
     WIDTH_MM_RANGE,
     DepthSemantics,
     HeightMode,
@@ -162,6 +164,12 @@ class PhotoWorkbenchWindow(QMainWindow):
         master_form.addRow("平滑半径 mm（0=关）", self.smoothing)
         self.px_hint = QLabel("（待深度推理）")
         master_form.addRow("mm↔px 换算", self.px_hint)
+        self.falloff_band = QDoubleSpinBox()
+        self.falloff_band.setRange(FALLOFF_BAND_MM_RANGE[0], FALLOFF_BAND_MM_RANGE[1])
+        self.falloff_band.setDecimals(1)
+        self.falloff_band.setValue(DEFAULT_FALLOFF_BAND_MM)
+        self.falloff_band.valueChanged.connect(self._on_master_parameters_changed)
+        master_form.addRow("边缘过渡宽度 mm（0=关）", self.falloff_band)
         self.base_thickness = QDoubleSpinBox()
         self.base_thickness.setRange(BASE_THICKNESS_MM_RANGE[0], BASE_THICKNESS_MM_RANGE[1])
         self.base_thickness.setDecimals(1)
@@ -446,6 +454,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             profile_id=profile_id,
             smoothing_radius_mm=smoothing if smoothing > 0.0 else None,
             base_thickness_mm=self.base_thickness.value(),
+            falloff_band_mm=self.falloff_band.value(),
         )
 
     def _current_profile(self):
@@ -576,6 +585,13 @@ class PhotoWorkbenchWindow(QMainWindow):
             "重读校验：OBJ/STL 封闭；"
             f"顶面最大误差 {checks.get('top_surface_max_error_mm')} mm（门 1e-4）",
         ]
+        falloff = data.get("falloff", {})
+        if falloff.get("raised_points"):
+            lines.append(
+                f"边缘过渡：带宽 {falloff.get('band_mm')} mm；域外抬升 "
+                f"{falloff.get('raised_points')} 点（最高 {falloff.get('max_raised_mm'):.2f} mm；"
+                "主体内部高度未变，无垂直墙）"
+            )
         if clamp.get("clamped_points") or clamp.get("clamped_below_points"):
             lines.append(
                 f"限幅改变：上限 {clamp.get('cap_mm')} mm；压顶 {clamp.get('clamped_points')} 点、"
@@ -736,6 +752,8 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"{parameters.depth_mm:g}",
             "--base-mm",
             f"{parameters.base_thickness_mm:g}",
+            "--falloff-mm",
+            f"{parameters.falloff_band_mm:g}",
         ]
         if parameters.smoothing_radius_mm is not None:
             arguments.extend(["--smoothing-mm", f"{parameters.smoothing_radius_mm:g}"])

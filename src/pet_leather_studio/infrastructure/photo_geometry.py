@@ -233,9 +233,11 @@ class PhotoGeometry:
                 "smoothing_radius_mm": parameters.smoothing_radius_mm,
                 "detail_strength": parameters.detail_strength,
                 "base_thickness_mm": parameters.base_thickness_mm,
+                "falloff_band_mm": parameters.falloff_band_mm,
             },
             "height_resolution": height_resolution,
             "smoothing": report.get("smoothing"),
+            "falloff": report.get("falloff"),
             "adjustments": adjustment_records,
             "relief": {
                 "datum_z_mm": 0.0,

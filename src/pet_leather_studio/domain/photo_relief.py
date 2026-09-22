@@ -20,6 +20,10 @@ BASE_THICKNESS_MM_RANGE = (1.0, 30.0)
 # 局部结构调整：偏移与过渡半径（mm；过渡平滑即防尖峰）
 LOCAL_OFFSET_MM_RANGE = (-20.0, 20.0)
 TRANSITION_MM_RANGE = (0.0, 50.0)
+# 蒙版边界背景过渡带（P2 复验 R1）：主体内部高度不变，主体外按最近有效
+# 高度在带宽内平滑落至背景 0——不改变 valid 的统计语义，只做几何过渡。
+FALLOFF_BAND_MM_RANGE = (0.0, 50.0)
+DEFAULT_FALLOFF_BAND_MM = 2.5
 # 参考标定稳健统计默认百分位（仅在选定有效正面区域与基准之后应用）
 DEFAULT_PERCENTILE = 99.0
 # 深度发布时的最小有效覆盖率（工程阈值，PH04：面积不足明确报错）
@@ -202,12 +206,14 @@ class ReliefParameters:
     smoothing_radius_mm: float | None = None
     detail_strength: float = 0.0
     base_thickness_mm: float = 3.0  # 加底实体底板厚度；浮雕基准 0，底板另计
+    falloff_band_mm: float = DEFAULT_FALLOFF_BAND_MM  # 蒙版边界过渡带宽；0=关闭（域外严格为 0）
 
     def validate(self) -> None:
         for name, (low, high) in (
             ("width_mm", WIDTH_MM_RANGE),
             ("depth_mm", DEPTH_MM_RANGE),
             ("base_thickness_mm", BASE_THICKNESS_MM_RANGE),
+            ("falloff_band_mm", FALLOFF_BAND_MM_RANGE),
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or not low <= value <= high:
