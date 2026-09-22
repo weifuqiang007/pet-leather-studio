@@ -166,6 +166,7 @@ class PhotoWorkbench:
                 profile=profile,
                 adjustments=adjustments,
                 stage=stage,
+                photo_png=self.store.directory(photo_id) / "work.png" if photo_id else None,
             )
             metadata.update(
                 kind="master",

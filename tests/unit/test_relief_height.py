@@ -10,8 +10,10 @@ from pet_leather_studio.algorithms.relief_height import (
     cap_to_mm,
     clamp_cap,
     controlled_heights_mm,
+    detail_layer_mm,
     edge_falloff,
     image_to_geometry_rows,
+    limit_detail_slope,
     ratio_depth_mm,
     slope_report,
     smooth_valid_aware,
@@ -118,6 +120,45 @@ def test_clamp_cap_reports_truncation_openly() -> None:
     assert report["cap_mm"] == 2.0
     clean, clean_report = clamp_cap(np.array([[0.1, 1.5]]), 2.0)
     assert clean_report["clamped_points"] == 0 and clean.max() == pytest.approx(1.5)
+
+
+def test_detail_layer_uses_photo_contrast_with_bounded_micro_relief() -> None:
+    """P3：照片细节会进入高度场，但幅度受限且可审计。"""
+    valid = np.ones((24, 24), dtype=bool)
+    raw = _ramp(24, 24)
+    photo = np.tile(np.where(np.arange(24) % 4 < 2, 0.1, 0.9), (24, 1))
+    off, off_report = detail_layer_mm(raw, valid, 2.0, 0.0, photo)
+    assert not off.any()
+    assert off_report == {"enabled": False, "strength": 0.0}
+
+    layer, report = detail_layer_mm(raw, valid, 2.0, 1.0, photo)
+    assert report["photo_used"] is True
+    assert report["applied_peak_mm"] <= report["amplitude_limit_mm"] + 1e-12
+    assert report["amplitude_limit_mm"] <= 0.24
+    assert np.ptp(layer) > 0.05  # 可见微起伏，不是只记录参数
+
+
+def test_detail_source_shape_or_nonfinite_values_rejected() -> None:
+    valid = np.ones((12, 8), dtype=bool)
+    raw = unit_height(_ramp(), valid, DepthSemantics.RELATIVE_LARGER_NEARER)
+    with pytest.raises(ValueError, match="形状不一致"):
+        detail_layer_mm(raw, valid, 2.0, 0.5, np.ones((3, 3)))
+    bad = raw.copy()
+    bad[2, 2] = np.nan
+    with pytest.raises(ValueError, match="NaN/Inf"):
+        detail_layer_mm(raw, valid, 2.0, 0.5, bad)
+
+
+def test_detail_slope_guard_removes_local_peak_without_raising_other_points() -> None:
+    heights = np.zeros((5, 5))
+    heights[2, 2] = 2.0
+    guarded, report = limit_detail_slope(heights, dx_mm=1.0, dy_mm=1.0)
+    slope = slope_report(guarded, np.ones_like(heights, dtype=bool), 1.0, 1.0)
+    assert report["enabled"] is True
+    assert report["changed_points"] > 0
+    assert guarded.max() < heights.max()
+    assert np.all(guarded <= heights + 1e-12)
+    assert slope["max_overall_deg"] <= 45.0 + 1e-9
 
 
 def test_image_to_geometry_rows_flips_row_order() -> None:

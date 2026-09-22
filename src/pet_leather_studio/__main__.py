@@ -52,7 +52,10 @@ def parser() -> argparse.ArgumentParser:
     )
     master.add_argument("--depth-mm", type=float, default=2.0)
     master.add_argument("--profile", default=None)
-    master.add_argument("--smoothing-mm", type=float, default=None)
+    master.add_argument("--smoothing-mm", type=float, default=1.5)
+    master.add_argument(
+        "--detail-strength", type=float, default=0.60, help="结构细节强度 0–1（0=关）"
+    )
     master.add_argument("--base-mm", type=float, default=3.0)
     master.add_argument("--falloff-mm", type=float, default=2.5, help="蒙版边缘过渡带宽 mm（0=关）")
     master.add_argument(
@@ -155,6 +158,7 @@ def main() -> int:
                             height_mode=HeightMode(args.height_mode),
                             profile_id=args.profile,
                             smoothing_radius_mm=args.smoothing_mm,
+                            detail_strength=args.detail_strength,
                             base_thickness_mm=args.base_mm,
                             falloff_band_mm=args.falloff_mm,
                         ),

@@ -49,6 +49,7 @@ class ReliefGeometryPort(Protocol):
         profile: ReferenceProfile | None,
         adjustments: Sequence[LocalAdjustment],
         stage: Path,
+        photo_png: Path | None = None,
     ) -> dict[str, Any]:
         """受控浮雕化并导出母版修订文件；校验失败必须抛错（不产出成功修订）。"""
         ...

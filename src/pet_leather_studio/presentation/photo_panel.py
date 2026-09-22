@@ -45,6 +45,7 @@ from pet_leather_studio.application.photo_workbench import PhotoWorkbench
 from pet_leather_studio.domain.errors import ResourceMissingError
 from pet_leather_studio.domain.photo_relief import (
     BASE_THICKNESS_MM_RANGE,
+    DEFAULT_DETAIL_STRENGTH,
     DEFAULT_FALLOFF_BAND_MM,
     DEPTH_MM_RANGE,
     FALLOFF_BAND_MM_RANGE,
@@ -170,9 +171,16 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.smoothing = QDoubleSpinBox()
         self.smoothing.setRange(0.0, 50.0)
         self.smoothing.setDecimals(1)
-        self.smoothing.setValue(0.0)
+        self.smoothing.setValue(1.5)
         self.smoothing.valueChanged.connect(self._on_master_parameters_changed)
-        master_form.addRow("平滑半径 mm（0=关）", self.smoothing)
+        master_form.addRow("平滑半径 mm（推荐 1.5；0=关）", self.smoothing)
+        self.detail_strength = QDoubleSpinBox()
+        self.detail_strength.setRange(0.0, 1.0)
+        self.detail_strength.setSingleStep(0.1)
+        self.detail_strength.setDecimals(2)
+        self.detail_strength.setValue(DEFAULT_DETAIL_STRENGTH)
+        self.detail_strength.valueChanged.connect(self._on_master_parameters_changed)
+        master_form.addRow("结构细节强度（0=关）", self.detail_strength)
         self.px_hint = QLabel("（待深度推理）")
         master_form.addRow("mm↔px 换算", self.px_hint)
         self.falloff_band = QDoubleSpinBox()
@@ -440,6 +448,16 @@ class PhotoWorkbenchWindow(QMainWindow):
         """三维中性预览：走 controlled_heights_mm（与导出同一数值管线，PH10 一致）。"""
         with np.load(self.service.store.directory(depth["id"]) / "depth.npz") as data:
             depths, valid = data["depth"], data["valid"]
+        photo_luminance = None
+        photo_id = depth.get("photo_id")
+        if photo_id:
+            photo_path = self.service.store.directory(photo_id) / "work.png"
+            if photo_path.is_file():
+                with Image.open(photo_path) as image:
+                    prepared = image.convert("L").resize(
+                        (depths.shape[1], depths.shape[0]), Image.Resampling.LANCZOS
+                    )
+                    photo_luminance = np.asarray(prepared, dtype=np.float64) / 255.0
         heights, _report = controlled_heights_mm(
             depths,
             valid,
@@ -447,6 +465,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             self._preview_parameters(),
             self._current_profile(),
             self._pending_masks,
+            photo_luminance,
         )
         heights = image_to_geometry_rows(heights)
         ny, nx = heights.shape
@@ -471,6 +490,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             height_mode=HeightMode.REFERENCE_RATIO if ratio else HeightMode.EXPLICIT_DEPTH,
             profile_id=profile_id,
             smoothing_radius_mm=smoothing if smoothing > 0.0 else None,
+            detail_strength=self.detail_strength.value(),
             base_thickness_mm=self.base_thickness.value(),
             falloff_band_mm=self.falloff_band.value(),
         )

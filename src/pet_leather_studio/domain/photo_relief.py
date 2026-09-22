@@ -15,6 +15,10 @@ from typing import Any
 WIDTH_MM_RANGE = (5.0, 300.0)
 DEPTH_MM_RANGE = (0.05, 20.0)
 SMOOTHING_RADIUS_MM_RANGE = (0.0, 50.0)
+# P3 细节层：0=关闭，1=在受限微起伏内完整保留可用的照片/深度局部对比。
+# 它不是生成式五官模型；超过范围会让照片噪声变成几何，故禁止大于 1。
+DETAIL_STRENGTH_RANGE = (0.0, 1.0)
+DEFAULT_DETAIL_STRENGTH = 0.60
 # 母版加底实体的底板厚度（对齐模具 backing_mm 工程口径；浮雕基准 0，底板另计）
 BASE_THICKNESS_MM_RANGE = (1.0, 30.0)
 # 局部结构调整：偏移与过渡半径（mm；过渡平滑即防尖峰）
@@ -232,8 +236,10 @@ class ReliefParameters:
             SMOOTHING_RADIUS_MM_RANGE[0] < self.smoothing_radius_mm <= SMOOTHING_RADIUS_MM_RANGE[1]
         ):
             raise ValueError("smoothing_radius_mm 超出允许范围（单位 mm）")
-        if not math.isfinite(self.detail_strength) or self.detail_strength < 0.0:
-            raise ValueError("detail_strength 不能为负")
+        if not math.isfinite(self.detail_strength) or not (
+            DETAIL_STRENGTH_RANGE[0] <= self.detail_strength <= DETAIL_STRENGTH_RANGE[1]
+        ):
+            raise ValueError("detail_strength 必须在 0–1 范围")
 
 
 def suggested_falloff_band_mm(depth_mm: float) -> float:

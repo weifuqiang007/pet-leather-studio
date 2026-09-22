@@ -23,6 +23,10 @@ from pet_leather_studio.domain.photo_relief import (
 
 MIN_VALID_FRACTION = 0.005  # 有效面积低于该比例视为空有效域（工程阈值，非物理量）
 SMOOTHING_DENOM_EPS = 1e-6  # 归一化卷积分母下限：邻域有效权重不足时保留原值
+DETAIL_ROBUST_PERCENTILE = 90.0
+DETAIL_MAX_MM = 0.24  # 微纹理绝对上限；避免照片亮暗直接变成深刻槽
+DETAIL_DEPTH_FRACTION = 0.12  # 同时随主起伏缩放，低起伏样本不被细节淹没
+DETAIL_SLOPE_LIMIT = 1.0  # 细节层合成后的安全坡度上限（mm/mm，即 45°）
 
 
 def unit_height(
@@ -117,6 +121,103 @@ def smooth_valid_aware(unit: np.ndarray, valid: np.ndarray, sigma_px: float) -> 
         unit,
     )
     return np.where(valid, smoothed, 0.0)
+
+
+def _normalised_highpass(
+    source: np.ndarray, valid: np.ndarray, sigma_px: float
+) -> tuple[np.ndarray, float]:
+    """返回鲁棒归一化的局部对比层（-1..1）及归一化尺度。"""
+    source = np.asarray(source, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    if source.shape != valid.shape:
+        raise ValueError("细节源与有效域形状不一致")
+    if not np.isfinite(source[valid]).all():
+        raise ValueError("细节源有效区域包含 NaN/Inf")
+    low = smooth_valid_aware(np.where(valid, source, 0.0), valid, sigma_px)
+    residual = np.where(valid, source - low, 0.0)
+    values = np.abs(residual[valid])
+    scale = float(np.percentile(values, DETAIL_ROBUST_PERCENTILE)) if values.size else 0.0
+    if scale <= 1e-12:
+        return np.zeros_like(source), 0.0
+    return np.where(valid, np.clip(residual / scale, -1.0, 1.0), 0.0), scale
+
+
+def detail_layer_mm(
+    raw_unit: np.ndarray,
+    valid: np.ndarray,
+    depth_cap_mm: float,
+    strength: float,
+    photo_luminance: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """把可用的深度/照片局部对比变为受限微纹理，不改变主起伏尺度。
+
+    照片亮度仅是结构提示，并不被声明为真实深度。幅度始终限制在 0.24 mm
+    以内，并记录到 manifest，供用户与后续质检复核。
+    """
+    raw_unit = np.asarray(raw_unit, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    if raw_unit.shape != valid.shape:
+        raise ValueError("细节层输入形状不一致")
+    if strength <= 0.0:
+        return np.zeros_like(raw_unit), {"enabled": False, "strength": 0.0}
+    depth_detail, depth_scale = _normalised_highpass(raw_unit, valid, sigma_px=1.0)
+    sources = [depth_detail]
+    report: dict[str, Any] = {
+        "enabled": True,
+        "strength": float(strength),
+        "algorithm": "depth-photo-highpass-v1",
+        "depth_highpass_scale": depth_scale,
+        "photo_used": False,
+    }
+    if photo_luminance is not None:
+        photo = np.asarray(photo_luminance, dtype=np.float64)
+        photo_detail, photo_scale = _normalised_highpass(photo, valid, sigma_px=1.0)
+        sources.append(photo_detail)
+        report.update(photo_used=True, photo_highpass_scale=photo_scale)
+    detail_unit = smooth_valid_aware(np.mean(sources, axis=0), valid, sigma_px=0.45)
+    amplitude_mm = min(DETAIL_MAX_MM, float(depth_cap_mm) * DETAIL_DEPTH_FRACTION) * float(strength)
+    layer = np.where(valid, detail_unit * amplitude_mm, 0.0)
+    report.update(
+        amplitude_limit_mm=amplitude_mm,
+        applied_rms_mm=float(np.sqrt(np.mean(layer[valid] ** 2))) if valid.any() else 0.0,
+        applied_peak_mm=float(np.abs(layer[valid]).max()) if valid.any() else 0.0,
+    )
+    return layer, report
+
+
+def limit_detail_slope(
+    heights_mm: np.ndarray, dx_mm: float, dy_mm: float, max_slope: float = DETAIL_SLOPE_LIMIT
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """以只降低局部尖峰的投影迭代限制细节合成后的相邻坡度。
+
+    只在低起伏、已启用细节层的候选中调用。它不会用于高比例母版，以免把
+    8 mm 级体块静默压低后伪装成合格；那类输入仍应保留真实坡度警告。
+    """
+    heights = np.asarray(heights_mm, dtype=np.float64).copy()
+    if not all(math.isfinite(value) and value > 0.0 for value in (dx_mm, dy_mm, max_slope)):
+        raise ValueError("坡度限制的间距与上限必须为正的有限值")
+    original = heights.copy()
+    iterations = 0
+    for _iterations in range(1, 65):
+        iterations = _iterations
+        before = heights.copy()
+        for axis, spacing in ((0, dy_mm), (1, dx_mm)):
+            limit = max_slope * spacing
+            head = (slice(None),) * axis + (slice(0, -1),)
+            tail = (slice(None),) * axis + (slice(1, None),)
+            heights[tail] = np.minimum(heights[tail], heights[head] + limit)
+            heights[head] = np.minimum(heights[head], heights[tail] + limit)
+        if float(np.abs(heights - before).max()) <= 1e-12:
+            break
+    changed = np.abs(heights - original)
+    return heights, {
+        "enabled": bool(changed.any()),
+        "algorithm": "downward-slope-projection-v1",
+        "max_slope_mm_per_mm": max_slope,
+        "iterations": iterations,
+        "changed_points": int((changed > 1e-12).sum()),
+        "max_lowering_mm": float(changed.max()) if changed.size else 0.0,
+    }
 
 
 def apply_local_adjustments(
@@ -261,6 +362,7 @@ def controlled_heights_mm(
     parameters: ReliefParameters,
     profile: ReferenceProfile | None = None,
     adjustments: Sequence[tuple[np.ndarray, float, float]] = (),
+    photo_luminance: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """受控浮雕化主数值管线（预览与导出共用，保证 PH10 一致）。
 
@@ -271,7 +373,8 @@ def controlled_heights_mm(
     截断）。局部调整不得拔高整个主体：偏移只经高斯过渡作用在刷选区域内。
     """
     parameters.validate()
-    unit = unit_height(depth, valid, semantics)
+    raw_unit = unit_height(depth, valid, semantics)
+    unit = raw_unit.copy()
     ny, nx = unit.shape
     dx_mm = float(parameters.width_mm) / max(nx - 1, 1)
     dy_mm = dx_mm * ny / max(ny - 1, 1)  # 与 photo_geometry 的 height_mm=width×ny/nx 同口径
@@ -315,6 +418,29 @@ def controlled_heights_mm(
     report["resolved_depth_mm"] = depth_cap
 
     heights = cap_to_mm(unit, depth_cap)
+    detail, detail_report = detail_layer_mm(
+        raw_unit,
+        np.asarray(valid, dtype=bool),
+        depth_cap,
+        parameters.detail_strength,
+        photo_luminance,
+    )
+    # 正向细节只使用当前位置的高度余量，避免由微纹理把已达峰的体块截平。
+    before_headroom = detail
+    detail = np.minimum(detail, depth_cap - heights)
+    detail_report["headroom_clipped_points"] = int((detail < before_headroom - 1e-12).sum())
+    detail_report["applied_rms_mm"] = (
+        float(np.sqrt(np.mean(detail[np.asarray(valid, dtype=bool)] ** 2)))
+        if np.asarray(valid).any()
+        else 0.0
+    )
+    detail_report["applied_peak_mm"] = (
+        float(np.abs(detail[np.asarray(valid, dtype=bool)]).max())
+        if np.asarray(valid).any()
+        else 0.0
+    )
+    heights = heights + detail
+    report["detail"] = detail_report
     heights, falloff = edge_falloff(
         heights, np.asarray(valid, dtype=bool), parameters.falloff_band_mm, dx_mm, dy_mm
     )
@@ -323,6 +449,12 @@ def controlled_heights_mm(
     heights, clamp = clamp_cap(heights, depth_cap)
     below = heights < 0.0  # 负向偏移不得挖穿浮雕基准 0（底板另计，不在此补偿）
     heights = np.maximum(heights, 0.0)
+    # 仅低起伏细节候选进入坡度保护；高比例模式继续报警而不静默改形。
+    if detail_report["enabled"] and depth_cap <= 4.0:
+        heights, detail_slope_guard = limit_detail_slope(heights, dx_mm, dy_mm)
+    else:
+        detail_slope_guard = {"enabled": False}
+    detail_report["slope_guard"] = detail_slope_guard
     clamp["clamped_below_points"] = int(below.sum())
     report["clamp"] = clamp
     report["adjustments_count"] = len(adjustments)

@@ -131,6 +131,7 @@ class PhotoGeometry:
         profile: ReferenceProfile | None,
         adjustments: Sequence[LocalAdjustment],
         stage: Path,
+        photo_png: Path | None = None,
     ) -> dict[str, Any]:
         for adjustment in adjustments:
             adjustment.validate()
@@ -140,6 +141,13 @@ class PhotoGeometry:
         if depth.shape != valid.shape or depth.ndim != 2 or min(depth.shape) < 2:
             raise ValueError("深度数据形状无效（须为二维且与有效域同形）")
         masks = _load_region_masks(adjustments, depth.shape)
+        photo_luminance: np.ndarray | None = None
+        if photo_png is not None and photo_png.is_file():
+            with Image.open(photo_png) as image:
+                prepared = image.convert("L").resize(
+                    (depth.shape[1], depth.shape[0]), Image.Resampling.LANCZOS
+                )
+                photo_luminance = np.asarray(prepared, dtype=np.float64) / 255.0
         heights_work, report = controlled_heights_mm(
             depth,
             valid,
@@ -147,6 +155,7 @@ class PhotoGeometry:
             parameters,
             profile,
             masks,
+            photo_luminance,
         )
         heights = image_to_geometry_rows(heights_work)  # 工作图 y 向下 → 几何 y 向上
         valid_geom = image_to_geometry_rows(valid)
@@ -216,8 +225,6 @@ class PhotoGeometry:
         warnings = []
         if clamp.get("clamped_points") or clamp.get("clamped_below_points"):
             warnings.append("限幅改变了局部调整结果，详见 clamp_report（不静默截断）")
-        if parameters.detail_strength != 0.0:
-            warnings.append("detail_strength 非 0，但细节增强属 P3 未实现，数值仅记录不生效")
         # P2 复验 R3：实测坡度超 45° 目标与起伏超产品建议上限都必须落 manifest
         # 警告（可审计），GUI 另有醒目展示——建议带宽公式不含输入深度断层。
         exceeded = slope_exceedances(report.get("slope") or {})
@@ -254,6 +261,7 @@ class PhotoGeometry:
             },
             "height_resolution": height_resolution,
             "smoothing": report.get("smoothing"),
+            "detail": report.get("detail"),
             "falloff": report.get("falloff"),
             "slope": report.get("slope"),
             "adjustments": adjustment_records,
