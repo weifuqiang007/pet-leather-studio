@@ -63,6 +63,7 @@
 | `src/pet_leather_studio/infrastructure/reference_profile.py` | 新增 | 参考 OBJ 正面及基准选择、测量与标定文件；不把包围盒 Z 跨度直接等同有效浮雕高度 |
 | `src/pet_leather_studio/presentation/photo_panel.py` | 新增 | 照片/蒙版/深度/中性模型切换、阶段状态及参数表单；不直接导入推理库 |
 | `src/pet_leather_studio/presentation/mask_editor.py` | 新增 | 叠加、缩放、画笔添加/擦除、撤销/重做；坐标映射独立测试 |
+| `src/pet_leather_studio/presentation/height_adjust_dialog.py` | 新增 | 局部结构调整对话框（P2 已实现）：高度色图底 + 刷选区域、每区域偏移/过渡、撤销/重做；复用 MaskCanvas，不写库 |
 | `src/pet_leather_studio/bootstrap/workbench.py` | 扩展 | 组装新旧服务，不放算法 |
 | `src/pet_leather_studio/__main__.py` | 扩展 | CLI 子命令，复用应用服务，不能另写一条不同业务流程 |
 | `src/pet_leather_studio/infrastructure/revisions.py` | 受控扩展 | 复用修订及锁；兼容旧数据、失败恢复和完整文件校验 |
@@ -361,3 +362,33 @@ A/B/C 全部修复；逐项处置与证据见 `docs/reports/photo-relief-P1.md` 
 - 第四轮运行 `workspace/photo-relief-p1/20260921-110433/`：覆盖 37.4%（未改）/ 63.0%→61.4%（剔灰影）/ 48.9%→51.3%（补腹毛）；逐行/逐列外沿核对 + 修好的叠加图视觉复核通过；r3 过期证据已删，换 `ph09-r4-20260921-110433-*`。
 - 标签：本轮提交新增 `photo-relief-p1-r3`（只新增不移动，旧标签未动），未推送远端。
 - 本轮计数：ruff check / format（68 文件）/ mypy 通过；无模型 102 + GUI 10 = **112** 通过；真实模型 2 项上轮通过、本轮未重跑（A/B/C 改动不触及推理内核）。`visual_review` 仍 pending 待用户勾选，阅读入口统一为第四轮 `20260921-110433`。
+
+## P2 交付结果回写（GLM，2026-09-22）
+
+本节为 P2 执行结果回写，与上文合同逐条对照；详细交付报告：`docs/reports/photo-relief-P2.md`。冲突时以本节与代码为准。
+
+### 交付状态
+
+- Git：分支 `glm/photo-relief-p2`，五个提交 `7ca97ac`（domain+algorithms）→ `afe4fe9`（infrastructure：reference_profile/photo_geometry）→ `d229791`（application+CLI：build_master 用例与子命令）→ `d90e92f`（GUI）→ 实验与文档收尾提交；标签 **`photo-relief-p2`**（只新增，旧标签未动）；经用户确认后推送远端（分支+新标签，不动 main）。改动前 bundle：`runtime/backups/20260921-glm-photo-relief-p2-start.bundle`。
+- 变更路径：`domain/photo_relief.py`（ReferenceProfile/LocalAdjustment/base_thickness_mm）、`algorithms/relief_height.py`（controlled_heights_mm/ratio_depth_mm/有效域感知平滑/局部调整）、`domain/photo_ports.py`、`application/photo_workbench.py`、`infrastructure/reference_profile.py`、`infrastructure/photo_geometry.py`、`presentation/photo_panel.py`、新 `presentation/height_adjust_dialog.py`、`bootstrap/{workbench,environment}.py`、`__main__.py`（路径表已同步补 `height_adjust_dialog.py` 行）。
+- PH05 落实：有效起伏 = 基准（min_z_plane）→ 99 分位切面，区域/基准/百分位/排除比例/真实极值全字段落盘；bbox_z_span_ratio（14.93%）单独记录仅历史对照，永不自动套用；被裁点 GUI 红点视图核查；缺/损 profile 拒绝 reference_ratio，仅开放 explicit_depth。真机标定 `images/test1_result/1_SubTool3.obj` → `profiles/ref-5c1ae382ab802ef6.json`（有效起伏 2.684223 / 参考宽 19.282962，60 mm 同比例 ⇒ 8.352108 mm）。
+- PH06 落实：母版修订平铺 master.obj/stl/vtp + preview.vtp + heightfield.npz + adjustment-*.png；发布前重读 OBJ+STL 校验（水密/正体积/边界/逐列顶面 ≤1e-4 mm，实测 ~2.4e-07 mm），失败 discard 不发布；正面母版基准 0、底板另计，起伏/实体厚度分行记录；clamp_report 界面展示不静默截断。
+- 受控浮雕化/局部调整：预览与导出共用 `controlled_heights_mm`（PH10 一致）；80/100/120 对照仅为实验脚本（`experiments/photo_relief/run_p2_relief_tiers.py`），产品与 GUI 无档位控件——深度由显式 mm 或参考比例唯一确定。
+
+### 核验指引
+
+```bash
+git show photo-relief-p2 --stat
+scripts/dev.sh run --frozen ruff check . && scripts/dev.sh run --frozen ruff format --check .
+scripts/dev.sh run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
+scripts/dev.sh run --frozen pytest tests -m 'not real_model'
+# 预期 155 passed, 2 deselected（无模型 140 + GUI 15；P1 末 112 → +43，旧测试零删除）
+```
+
+真机证据入口：机器总账 `experiments/photo_relief/out/p2-masters/report_data.json` 与 `out/p2-relief-tiers/report_data.json`（逐修订 id/体积/校验/渲染路径）；GUI 证据 `runtime/evidence/photo-p2/p2-gui-{explicit-master,ratio-master,excluded-points}.png`；母版实体在 `workspace/photo-relief-p1/20260921-110433/<key>/revisions/<master-id>/`。GUI 复测命令见交付报告"用户复测指引"。
+
+### 声明边界
+
+- PH12/P3（毛流细纹）未开始，`detail_strength=0.0` 不消费；P4 模具采样偏差评估未做（master.vtp→阴阳模集成链路已通，偏差量化属 P4）。
+- 有效正面区域为 v1 口径（full_xy_bounds_v1 + 相机正面假设），交互式区域/基准选择未实现；换口径须重标定。
+- 全部母版 `visual_review=pending`、`manufacturing_validated=false`；真实模型 2 项 P2 未重跑（改动不触及推理内核）。CI Linux 结果以远端实际运行为准。
