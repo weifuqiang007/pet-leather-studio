@@ -277,13 +277,28 @@ def controlled_heights_mm(
     dy_mm = dx_mm * ny / max(ny - 1, 1)  # 与 photo_geometry 的 height_mm=width×ny/nx 同口径
     report: dict[str, Any] = {"dx_mm": dx_mm, "grid": [int(ny), int(nx)]}
 
+    # 平滑统计始终入 report（P2 复验 R3：关闭也要可审计，不能缺省成"未记录"）
+    report["smoothing"] = {"enabled": False}
     if parameters.smoothing_radius_mm is not None and parameters.smoothing_radius_mm > 0.0:
         sigma_px = float(parameters.smoothing_radius_mm) / dx_mm
-        unit = smooth_valid_aware(unit, np.asarray(valid, dtype=bool), sigma_px)
+        valid_mask = np.asarray(valid, dtype=bool)
+        before = unit  # 平滑前单位高度场（细节位移的对照基准）
+        unit = smooth_valid_aware(unit, valid_mask, sigma_px)
+        # 细节损失代理指标（单位高度、有效域内）：位移 RMS / 相对均值起伏 RMS。
+        # ≈1 细节保留、≈0 高度场被显著抹平；这是数值代理，不替代视觉评审。
+        displacement = (unit - before)[valid_mask]
+        signal = (before - before[valid_mask].mean())[valid_mask]
+        signal_rms = float(np.sqrt(np.mean(signal**2))) if signal.size else 0.0
+        residual_rms = float(np.sqrt(np.mean(displacement**2))) if displacement.size else 0.0
+        retention = max(0.0, 1.0 - residual_rms / signal_rms) if signal_rms > 1e-12 else 1.0
         report["smoothing"] = {
+            "enabled": True,
             "radius_mm": float(parameters.smoothing_radius_mm),
             "sigma_px": sigma_px,
             "dx_mm": dx_mm,
+            "detail_signal_rms": signal_rms,
+            "detail_displacement_rms": residual_rms,
+            "detail_retention": retention,
         }
 
     if parameters.height_mode is HeightMode.REFERENCE_RATIO:

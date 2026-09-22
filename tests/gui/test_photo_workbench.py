@@ -397,7 +397,8 @@ def test_falloff_suggestion_autofill_and_hint(qtbot, tmp_path: Path) -> None:
     qtbot.addWidget(window)
     window.versions.setCurrentIndex(window.versions.findData(depth_id))
     assert window.falloff_band.value() == 3.0  # ceil(1.5×2.0)
-    assert "建议 ≥ 3.0" in window.falloff_hint.text()
+    assert "理想裙边建议 ≥ 3.0" in window.falloff_hint.text()  # R3：不含断层的措辞
+    assert "不含输入深度断层" in window.falloff_hint.text()
     assert "版边余量" in window.falloff_hint.text()
 
     window.master_depth.setValue(4.0)
@@ -406,6 +407,41 @@ def test_falloff_suggestion_autofill_and_hint(qtbot, tmp_path: Path) -> None:
     window.master_depth.setValue(2.0)
     assert window.falloff_band.value() == 1.0  # 手改值不被覆盖
     window.close()
+
+
+def test_falloff_hint_flags_recommended_relief_max(qtbot, tmp_path: Path) -> None:
+    """R3：解析起伏超建议上限（4.0 mm）时提示醒目警告（不拒绝生成）。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(depth_id))
+    window.master_depth.setValue(8.0)  # > RECOMMENDED_MAX_RELIEF_MM
+    hint = window.falloff_hint.text()
+    assert "⚠" in hint and "建议上限 4.0" in hint
+    assert window.falloff_band.value() == 7.3  # 版边余量约束：9.27−2.0 平边保留
+    window.close()
+
+
+def test_master_text_flags_slope_exceedance() -> None:
+    """R3：实测坡度超 45° 目标时母版详情给 ⚠ 行并指向平滑/降起伏，不超则无 ⚠。"""
+    steep = {
+        "max_overall_mm_per_mm": 12.3,
+        "max_overall_deg": 85.4,
+        "boundary_max_mm_per_mm": 12.3,
+        "boundary_max_deg": 85.4,
+        "interior_max_mm_per_mm": 12.3,
+        "interior_max_deg": 85.4,
+    }
+    text = PhotoWorkbenchWindow._master_text({"slope": steep})
+    assert "⚠ 坡度超限" in text and "全域实测最陡 85.4°" in text
+    assert "加宽带宽无效" in text  # 建议带宽公式不含断层，不得误导用户加带
+    gentle = {
+        **steep,
+        "max_overall_deg": 30.0,
+        "boundary_max_deg": 20.0,
+        "interior_max_deg": 25.0,
+    }
+    assert "⚠" not in PhotoWorkbenchWindow._master_text({"slope": gentle})
 
 
 def test_section_dialog_profiles_master(qtbot, tmp_path: Path) -> None:

@@ -28,6 +28,10 @@ DEFAULT_FALLOFF_BAND_MM = 2.5
 # 起伏给出最小带宽；版边保留平坦环带，过渡带不得抬起版面边缘。
 FALLOFF_MAX_SLOPE = 1.0  # 建议坡度上限（mm/mm；1.0 = 45°）
 FALLOFF_BORDER_CLEARANCE_MM = 2.0
+# 产品高度建议上限（P2 复验 R3）：60 mm 级宠物皮雕挂件的工程启发值，非物理
+# 推导——超出只警告不拒绝（硬边界仍是 DEPTH_MM_RANGE）；比例换算偏高时提示
+# 降低显式深度/收窄宽度，而不是靠加宽裙边弥补。
+RECOMMENDED_MAX_RELIEF_MM = 4.0
 # 参考标定稳健统计默认百分位（仅在选定有效正面区域与基准之后应用）
 DEFAULT_PERCENTILE = 99.0
 # 深度发布时的最小有效覆盖率（工程阈值，PH04：面积不足明确报错）
@@ -245,3 +249,25 @@ def suggested_falloff_band_mm(depth_mm: float) -> float:
         raise ValueError("建议带宽需要正的有限起伏深度")
     band = math.ceil(1.5 * depth / FALLOFF_MAX_SLOPE * 10.0) / 10.0
     return min(band, FALLOFF_BAND_MM_RANGE[1])
+
+
+def slope_exceedances(slope: Mapping[str, Any]) -> list[str]:
+    """实测坡度超目标项（P2 复验 R3）：返回可读描述列表，空列表 = 未超限。
+
+    目标角 atan(FALLOFF_MAX_SLOPE)=45° 只约束理想裙边公式；实测超限通常由
+    输入深度固有断层主导——调用方必须醒目展示并指向平滑半径/降低起伏，
+    不得用"建议带宽"话术掩盖（复验报告 R2 结论）。
+    """
+
+    target_deg = math.degrees(math.atan(FALLOFF_MAX_SLOPE))
+    labels = (
+        ("max_overall_deg", "全域"),
+        ("boundary_max_deg", "边界过渡"),
+        ("interior_max_deg", "域内"),
+    )
+    flagged: list[str] = []
+    for key, label in labels:
+        value = slope.get(key)
+        if value is not None and float(value) > target_deg + 1e-9:
+            flagged.append(f"{label}实测最陡 {float(value):.1f}°")
+    return flagged

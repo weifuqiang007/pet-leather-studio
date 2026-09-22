@@ -50,11 +50,13 @@ from pet_leather_studio.domain.photo_relief import (
     FALLOFF_BAND_MM_RANGE,
     FALLOFF_BORDER_CLEARANCE_MM,
     FALLOFF_MAX_SLOPE,
+    RECOMMENDED_MAX_RELIEF_MM,
     WIDTH_MM_RANGE,
     DepthSemantics,
     HeightMode,
     LocalAdjustment,
     ReliefParameters,
+    slope_exceedances,
     suggested_falloff_band_mm,
 )
 from pet_leather_studio.infrastructure.reference_profile import (
@@ -540,7 +542,16 @@ class PhotoWorkbenchWindow(QMainWindow):
             depth = self.master_depth.value()
         suggested = suggested_falloff_band_mm(depth)
         cap_deg = math.degrees(math.atan(FALLOFF_MAX_SLOPE))
-        note = f"按深度 {depth:.2f} mm 建议 ≥ {suggested:.1f} mm（最陡坡度 ≤{cap_deg:.0f}°）"
+        # R3 文案：45° 只约束理想裙边公式——实测坡度见母版详情坡度行，不含深度断层
+        note = (
+            f"按深度 {depth:.2f} mm 理想裙边建议 ≥ {suggested:.1f} mm"
+            f"（裙边公式最陡 ≤{cap_deg:.0f}°，不含输入深度断层；实测以母版详情坡度行为准）"
+        )
+        if depth > RECOMMENDED_MAX_RELIEF_MM:
+            note += (
+                f"；⚠ 起伏 {depth:.2f} mm 超过建议上限 {RECOMMENDED_MAX_RELIEF_MM:.1f} mm"
+                "（皮雕挂件偏高，建议改显式深度降低起伏或收窄宽度）"
+            )
         valid = self._latest_depth_valid()
         if valid is not None and valid.any() and not valid.all():
             rows, cols = valid.shape
@@ -673,11 +684,19 @@ class PhotoWorkbenchWindow(QMainWindow):
             )
         slope = data.get("slope", {})
         if slope.get("max_overall_mm_per_mm") is not None:
+            exceeded = slope_exceedances(slope)
+            warning = (
+                f"\n⚠ 坡度超限：{'、'.join(exceeded)} > 45° 目标——实测由输入深度固有"
+                "断层主导（建议带宽公式管不到）；可用平滑半径缓解或降低起伏，加宽带宽无效"
+                if exceeded
+                else ""
+            )
             lines.append(
                 f"坡度：全域最陡 {slope.get('max_overall_deg'):.1f}°；"
                 f"边界过渡 {slope.get('boundary_max_deg'):.1f}°；"
                 f"域内 {slope.get('interior_max_deg'):.1f}°"
-                "（域内为输入深度固有断层，可用平滑半径缓解；建议带宽 ≥ 1.5×起伏）"
+                "（域内为输入深度固有断层，可用平滑半径缓解；理想裙边建议带宽 ≥ 1.5×起伏）"
+                + warning
             )
         if clamp.get("clamped_points") or clamp.get("clamped_below_points"):
             lines.append(

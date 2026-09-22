@@ -26,11 +26,13 @@ from pet_leather_studio.algorithms.relief_height import (
     image_to_geometry_rows,
 )
 from pet_leather_studio.domain.photo_relief import (
+    RECOMMENDED_MAX_RELIEF_MM,
     DepthSemantics,
     HeightMode,
     LocalAdjustment,
     ReferenceProfile,
     ReliefParameters,
+    slope_exceedances,
 )
 from pet_leather_studio.infrastructure.revisions import file_hash
 
@@ -216,6 +218,21 @@ class PhotoGeometry:
             warnings.append("限幅改变了局部调整结果，详见 clamp_report（不静默截断）")
         if parameters.detail_strength != 0.0:
             warnings.append("detail_strength 非 0，但细节增强属 P3 未实现，数值仅记录不生效")
+        # P2 复验 R3：实测坡度超 45° 目标与起伏超产品建议上限都必须落 manifest
+        # 警告（可审计），GUI 另有醒目展示——建议带宽公式不含输入深度断层。
+        exceeded = slope_exceedances(report.get("slope") or {})
+        if exceeded:
+            warnings.append(
+                f"坡度超限：{'、'.join(exceeded)} 超过 45° 目标"
+                "（通常由输入深度固有断层主导；建议加平滑半径或降低起伏，加宽带宽无效）"
+            )
+        resolved_depth = float(report["resolved_depth_mm"])
+        if resolved_depth > RECOMMENDED_MAX_RELIEF_MM:
+            warnings.append(
+                f"起伏 {resolved_depth:.2f} mm 超过建议上限 {RECOMMENDED_MAX_RELIEF_MM:.1f} mm"
+                "（60 mm 级皮雕挂件工程启发值；建议改显式深度降低起伏或收窄宽度，"
+                "而不是加宽裙边）"
+            )
         return {
             "schema_version": 2,
             "algorithm": MASTER_ALGORITHM,

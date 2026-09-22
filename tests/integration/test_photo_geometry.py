@@ -343,3 +343,29 @@ def test_master_metadata_records_slope(tmp_path: Path) -> None:
     assert slope["interior_max_deg"] == pytest.approx(
         math.degrees(math.atan(slope["interior_max_mm_per_mm"]))
     )
+
+
+def test_master_metadata_warns_on_slope_and_relief_targets(tmp_path: Path) -> None:
+    """P2 复验 R3：实测坡度超 45° 与起伏超建议上限都必须进 manifest 警告；
+    平滑关闭时 smoothing 块仍可审计（enabled=False）。"""
+    cliff = tmp_path / "cliff.npz"
+    depth = np.zeros((ROWS, COLS))
+    depth[:, COLS // 2 :] = 1.0  # 单列断层：域内斜率 = depth_mm/dx ≫ 45°
+    np.savez_compressed(
+        cliff, depth=depth.astype(np.float32), valid=np.ones((ROWS, COLS), dtype=bool)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    metadata = PhotoGeometry().build_master(
+        cliff,
+        {"depth_semantics": "relative_larger_nearer"},
+        ReliefParameters(width_mm=WIDTH_MM, depth_mm=8.0, base_thickness_mm=BASE_MM),
+        None,
+        (),
+        stage,
+    )
+    warnings = "\n".join(metadata["warnings"])
+    assert "坡度超限" in warnings  # atan(8.0/1.0) ≈ 82.9°
+    assert "82.9°" in warnings and "加宽带宽无效" in warnings
+    assert "8.00 mm 超过建议上限 4.0 mm" in warnings  # 起伏建议上限（警告不拒绝）
+    assert metadata["smoothing"] == {"enabled": False}

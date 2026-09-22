@@ -23,6 +23,7 @@ from pet_leather_studio.domain.photo_relief import (
     LocalAdjustment,
     ReferenceProfile,
     ReliefParameters,
+    slope_exceedances,
     suggested_falloff_band_mm,
 )
 
@@ -482,3 +483,46 @@ def test_controlled_heights_report_contains_slope() -> None:
     assert slope["interior_max_mm_per_mm"] > 0.0
     assert slope["max_overall_mm_per_mm"] == pytest.approx(slope["interior_max_mm_per_mm"])
     assert 0.0 < slope["interior_max_deg"] < 90.0
+
+
+# ---- P2 复验 R3：坡度超限提示 / 平滑审计 / 细节保留率 ----
+
+
+def test_slope_exceedances_flags_only_overruns() -> None:
+    """45° 目标只针对理想裙边：实测超限项被点名，恰好达标不算，缺键安全。"""
+    steep = {"max_overall_deg": 85.4, "boundary_max_deg": 85.4, "interior_max_deg": 10.5}
+    flagged = slope_exceedances(steep)
+    assert "全域实测最陡 85.4°" in flagged
+    assert "边界过渡实测最陡 85.4°" in flagged
+    assert not any("域内" in item for item in flagged)  # 10.5° 未超
+    at_target = {"max_overall_deg": 45.0, "boundary_max_deg": 0.0, "interior_max_deg": 44.999}
+    assert slope_exceedances(at_target) == []  # 恰好 45° 不算超限（容差防浮点）
+    assert slope_exceedances({}) == []
+
+
+def test_smoothing_report_auditable_and_retention_monotone() -> None:
+    """平滑关闭也必须可审计（enabled=False）；半径越大细节保留率越低。"""
+    rng = np.random.default_rng(7)
+    depth = rng.random((20, 80))
+    valid = np.ones((20, 80), dtype=bool)
+    _, off_report = controlled_heights_mm(
+        depth,
+        valid,
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0),
+    )
+    assert off_report["smoothing"] == {"enabled": False}  # R3：关闭不再是缺省/无记录
+    retentions = []
+    for radius in (1.0, 4.0):
+        _, report = controlled_heights_mm(
+            depth,
+            valid,
+            DepthSemantics.RELATIVE_LARGER_NEARER,
+            ReliefParameters(width_mm=60.0, depth_mm=2.0, smoothing_radius_mm=radius),
+        )
+        block = report["smoothing"]
+        assert block["enabled"] is True
+        assert block["radius_mm"] == pytest.approx(radius)
+        assert 0.0 <= block["detail_retention"] <= 1.0
+        retentions.append(block["detail_retention"])
+    assert retentions[0] > retentions[1]  # 1 mm 比 4 mm 保留更多细节
