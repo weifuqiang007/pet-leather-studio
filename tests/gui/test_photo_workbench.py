@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from pet_leather_studio.bootstrap import environment
@@ -36,6 +37,7 @@ from pet_leather_studio.presentation.photo_panel import (  # noqa: E402
     VIEW_PHOTO,
     PhotoWorkbenchWindow,
 )
+from pet_leather_studio.presentation.section_dialog import CrossSectionDialog  # noqa: E402
 
 
 class StubInference:
@@ -295,13 +297,16 @@ def test_build_master_argument_assembly(qtbot, tmp_path: Path) -> None:
             "--base-mm",
             "4",
             "--falloff-mm",
-            "2.5",
+            "1.9",  # R2：按 1.25 mm 起伏自动填入建议带宽 ceil(1.5×1.25×10)/10
             "--smoothing-mm",
             "1.5",
             "--adjustment",
             "/tmp/region.png:0.5:2:鼻尖",
         ]
     ]
+    window.falloff_band.setValue(0.8)  # 手动改窄后不再被建议值覆盖
+    window.build_master()
+    assert captured[1][captured[1].index("--falloff-mm") + 1] == "0.8"
     window.close()
 
 
@@ -322,6 +327,7 @@ def test_master_view_dispatch(qtbot, tmp_path: Path) -> None:
     assert "母版" in text and "photo_reconstruction" in text
     assert "正面起伏" in text and "重读校验" in text
     assert "边缘过渡" in text  # R1：非矩形主体的过渡带统计须展示
+    assert "坡度" in text and "域内" in text  # R2：全域/边界/域内坡度统计须展示
 
     window.view.setCurrentText(VIEW_PHOTO)  # 母版上游链可达
     assert len(window.viewer.renderer.actors) > 0
@@ -380,4 +386,50 @@ def test_excluded_points_view_and_ratio_hint(qtbot, tmp_path: Path) -> None:
 
     window.height_mode.setCurrentIndex(1)
     assert "⇒ 深度" in window.ratio_hint.text()
+    window.close()
+
+
+def test_falloff_suggestion_autofill_and_hint(qtbot, tmp_path: Path) -> None:
+    """R2：建议带宽按解析起伏自动填入（显式 2.0→3.0），提示含版边余量；
+    深度变化后仍自动跟随，手动改过则保留手改值。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(depth_id))
+    assert window.falloff_band.value() == 3.0  # ceil(1.5×2.0)
+    assert "建议 ≥ 3.0" in window.falloff_hint.text()
+    assert "版边余量" in window.falloff_hint.text()
+
+    window.master_depth.setValue(4.0)
+    assert window.falloff_band.value() == 6.0  # 仍自动跟随
+    window.falloff_band.setValue(1.0)  # 手动改窄
+    window.master_depth.setValue(2.0)
+    assert window.falloff_band.value() == 1.0  # 手改值不被覆盖
+    window.close()
+
+
+def test_section_dialog_profiles_master(qtbot, tmp_path: Path) -> None:
+    """R2：侧面截面对话框画高度剖面（穿过最高点）并给截面内最陡坡度。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    master = service.build_master(
+        depth_id, ReliefParameters(width_mm=40.0, depth_mm=1.5, base_thickness_mm=2.0)
+    )
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(master.revision_id))
+    window.show_section()
+    dialog = window._section_dialog
+    assert dialog is not None and dialog.isVisible()
+    assert "截面 y =" in dialog.header.text() and "最陡" in dialog.header.text()
+    assert dialog.canvas.span_mm == pytest.approx(40.0)
+    assert not dialog.canvas.grab().isNull()  # 纯 QPainter 画布可离屏抓取
+
+    heights = np.zeros((10, 30))
+    heights[3:6, 5:25] = 1.2  # 台阶：跨界单格跳 1.2 mm / dx=1 → 50.2°
+    heights[4, 15] = 2.0
+    standalone = CrossSectionDialog()
+    qtbot.addWidget(standalone)
+    standalone.set_section(heights, heights > 0, dx_mm=1.0, dy_mm=1.0)
+    assert "穿过最高点 2.00 mm" in standalone.header.text()
+    assert "50.2°" in standalone.header.text()
     window.close()

@@ -238,6 +238,7 @@ class PhotoGeometry:
             "height_resolution": height_resolution,
             "smoothing": report.get("smoothing"),
             "falloff": report.get("falloff"),
+            "slope": report.get("slope"),
             "adjustments": adjustment_records,
             "relief": {
                 "datum_z_mm": 0.0,

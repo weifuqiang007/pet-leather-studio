@@ -191,6 +191,69 @@ def edge_falloff(
     return result, report
 
 
+def background_clearance_mm(valid: np.ndarray, dx_mm: float, dy_mm: float) -> float:
+    """版面边框（无效像素）到有效域（主体）的最小距离 mm（P2 复验 R2）。
+
+    过渡带宽超过该距离会抬起版面边缘（版边应保持平坦以便夹持/裁切），
+    GUI 据此收窄建议带宽并提示。主体已贴版边（边框存在有效像素）时平边
+    前提本身不成立——返回 inf 表示无余量约束，由调用方另行提示贴边；
+    全有效域（无背景，过渡带无作用）返回 0；空有效域返回 inf（上游
+    归一化早已拒绝，此处仅保持函数完备）。
+    """
+
+    valid = np.asarray(valid, dtype=bool)
+    if valid.all():
+        return 0.0
+    if not valid.any():
+        return float("inf")
+    border_mask = np.zeros_like(valid)
+    border_mask[0, :] = border_mask[-1, :] = True
+    border_mask[:, 0] = border_mask[:, -1] = True
+    if (valid & border_mask).any():
+        return float("inf")  # 主体贴版边：平边已无法保证，不构成带宽约束
+    distance = ndimage.distance_transform_edt(~valid, sampling=(float(dy_mm), float(dx_mm)))
+    border = np.concatenate([distance[0, :], distance[-1, :], distance[:, 0], distance[:, -1]])
+    return float(border.min())
+
+
+def slope_report(
+    heights_mm: np.ndarray, valid: np.ndarray, dx_mm: float, dy_mm: float
+) -> dict[str, Any]:
+    """顶面坡度统计（P2 复验 R2）：按相邻单元高差/间距分类计数。
+
+    interior = 两端皆有效（输入深度固有断层指标）；boundary = 恰一端有效
+    （过渡带落地坡度）；overall 含背景（裙边外缘等）。角度 = atan(斜率)。
+    无某类相邻对时该项记 0。
+    """
+
+    heights = np.asarray(heights_mm, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    if heights.shape != valid.shape:
+        raise ValueError("heights 与 valid 形状不一致")
+
+    def _maxdeg(slope: float) -> float:
+        return math.degrees(math.atan(slope))
+
+    overall = interior = boundary = 0.0
+    for axis, spacing in ((0, float(dy_mm)), (1, float(dx_mm))):
+        drop = np.abs(np.diff(heights, axis=axis)) / spacing
+        head = (slice(None),) * axis + (slice(0, -1),)
+        tail = (slice(None),) * axis + (slice(1, None),)
+        both_valid = valid[head] & valid[tail]
+        overall = max(overall, float(drop.max()) if drop.size else 0.0)
+        interior = max(interior, float(drop[both_valid].max()) if both_valid.any() else 0.0)
+        cross = valid[head] ^ valid[tail]
+        boundary = max(boundary, float(drop[cross].max()) if cross.any() else 0.0)
+    return {
+        "max_overall_mm_per_mm": overall,
+        "max_overall_deg": _maxdeg(overall),
+        "interior_max_mm_per_mm": interior,
+        "interior_max_deg": _maxdeg(interior),
+        "boundary_max_mm_per_mm": boundary,
+        "boundary_max_deg": _maxdeg(boundary),
+    }
+
+
 def controlled_heights_mm(
     depth: np.ndarray,
     valid: np.ndarray,
@@ -248,4 +311,5 @@ def controlled_heights_mm(
     clamp["clamped_below_points"] = int(below.sum())
     report["clamp"] = clamp
     report["adjustments_count"] = len(adjustments)
+    report["slope"] = slope_report(heights, np.asarray(valid, dtype=bool), dx_mm, dy_mm)
     return heights, report

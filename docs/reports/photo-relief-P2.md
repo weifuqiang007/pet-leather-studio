@@ -190,3 +190,55 @@ scripts/dev.sh run --frozen pet-leather-studio --project workspace/photo-relief-
 
 - R1 提交见 `git log` 本条（fix(p2-r1)）；新标签 **`photo-relief-p2-r1`**（只新增；`photo-relief-p2` 及更早标签未动，已推送远端）。
 - 母版 `visual_review=pending` 不变：过渡带形态（带宽 2.5 mm 是否合意）属视觉评审，须用户在 GUI 亲自查看后勾选。
+
+## 复验记录（R2：过渡带宽度指引与坡度/截面工具，2026-09-22）
+
+R1 复验后用户裁定：工程链路通过、视觉验收仍不通过——无贴图渲染仍见硬边，尤其 reference-ratio 短毛犬（8.35 mm 起伏 × 2.5 mm 带宽 ≈ 3.34 h/band，视觉近垂直墙；复验记录见 [photo-relief-P2-acceptance-review.md](photo-relief-P2-acceptance-review.md) 提交 8b9a6ad）。R2 据验收报告四点实现：①按最大起伏提示合适带宽；②GUI 显示侧面截面与最陡坡度；③生成不同带宽对照版（审美由用户选定，不以数值测试替代）；④核查域内深度固有断层。
+
+### 实现内容
+
+- `domain/photo_relief.py`：`FALLOFF_MAX_SLOPE=1.0`（45° 坡度上限）与 `suggested_falloff_band_mm(depth)`——smoothstep 峰值斜率 1.5×h/带宽 ≤ 上限 ⇒ **带宽 ≥ 1.5×起伏**，向上取整到 0.1 mm、封顶 50（2.0→3.0；1.25→1.9；8.352108→12.6；40→50）。
+- `algorithms/relief_height.py`：
+  - `background_clearance_mm(valid, dx, dy)`：版面边框到主体的最小距离（带宽越过它会抬起版边）。**主体贴版边（边框存在有效像素）返回 inf**——平边前提不成立，不再构成带宽约束，由 GUI 另行提示；全有效 0、空有效 inf。
+  - `slope_report(heights, valid, dx, dy)`：相邻单元 |Δh|/间距按两端有效性分类——**interior**（两端有效=输入深度固有断层指标）、**boundary**（恰一端有效=过渡带落地）、**overall**（含背景外缘）；角度 = atan(斜率)。写入 report 与 manifest `slope{…}`。
+- `presentation/photo_panel.py`：
+  - "过渡带建议"标签：按当前解析深度（显式或比例换算）给出 `建议 ≥ X mm（最陡坡度 ≤45°）`；未手改过（值仍为默认或上次自动填入）时**自动填入** spin（重入保护，手改即接管）；受版边余量约束时收窄并注明（保留 2 mm 平边），贴边时提示"主体已贴版边，如需平边请修蒙版或加宽版面"。
+  - 母版详情新增坡度行：`全域最陡 X°；边界过渡 Y°；域内 Z°（域内为输入深度固有断层，可用平滑半径缓解；建议带宽 ≥ 1.5×起伏）`。
+  - 新按钮"侧面截面…"→ `presentation/section_dialog.py`（新文件）：QPainter 自绘穿过最高点的横截面轮廓（象牙色=有效域、灰色=背景过渡带、5 mm 刻度、y 轴 0/半高/最高标注），头部给出 `截面 y=…（穿过最高点 … mm）；截面内最陡 …°`；非模态，可与三维视图并排对照。
+- `experiments/photo_relief/run_p2_falloff_bands.py`（新）：9 臂对照实验（下表），渲染侧视+斜视至 `experiments/photo_relief/out/p2-falloff-bands/`，`report_data.json` 记录每臂 falloff/slope/版边余量/版边最大抬升/修订 id。
+
+### 对照实测（同 depth 修订 8a18d7ed…，短毛犬；带宽扫描 + 平滑对照臂）
+
+| 臂 | 深度 mm | 带宽 mm | 域外抬升点 | 边界过渡° | 域内° | 全域° | 版边最大抬升 mm |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| explicit-b2.5（R1 默认） | 2.0 | 2.5 | 2045 | 69.9 | 71.4 | 71.4 | 2.00 |
+| explicit-b3.0（建议） | 2.0 | 3.0 | 2478 | 70.4 | 71.4 | 71.4 | 2.00 |
+| explicit-b4.0（2h） | 2.0 | 4.0 | 3223 | 70.8 | 71.4 | 71.4 | 2.00 |
+| explicit-b6.0（3h） | 2.0 | 6.0 | 4971 | 71.1 | 71.4 | 71.4 | 2.00 |
+| **explicit-b3.0-smooth** | 2.0 | 3.0 | 2478 | **15.2** | **10.5** | 44.1 | 1.95 |
+| ratio-b2.5（验收所指） | 8.352 | 2.5 | 2045 | 85.0 | 85.4 | 85.4 | 8.35 |
+| ratio-b12.6（建议） | 8.352 | 12.6 | 9850 | 85.4 | 85.4 | 85.5 | 8.35 |
+| ratio-b16.7（2h） | 8.352 | 16.7 | 11508 | 85.4 | 85.4 | 85.5 | 8.35 |
+| ratio-b25.1（3h） | 8.352 | 25.1 | 13459 | 85.4 | 85.4 | 85.6 | 8.35 |
+
+（各臂 master 修订 id 依次 `1ed3a502/bb5705ba/0a9afb34/49a4d690/72b39d6a/1272dc7f/8a3562e3/7c57a93c/357d663a`…，修订史 append-only。）
+
+**两点诚实结论（对应验收第 4 点）**：
+
+1. **带宽是二阶因素**：边界/域内**最大**坡度在全部带宽臂上几乎不变（显式 ≈70–71°、比例 ≈85°）——该最大值由蒙版边缘近旁的**输入深度固有断层**决定（跨界对的两侧最近有效高度本身相差悬殊），与裙边公式无关（裙边自身斜率 1.5×h/带宽已被单测钉扎：2 mm×2.5 mm 带 ≈ 50°、8.35 mm×12.6 mm 带 ≈ 45°）。加宽带的可见效果是**裙边变宽**（ratio-b12.6 侧视落地斜坡约占宽度一半，渲染目视确认），不是消除最大陡点。
+2. **平滑半径是一阶手段**：同建议带宽加 `smoothing_radius_mm=1.5` 后边界最大 85°→**15.2°**、域内 85.4°→**10.5°**（显式组 71→15.2/10.5°）——输入深度断层被抹平。R1 为保"域内逐位不变"未动它，R2 通过 GUI 建议文案与对照臂明确指向该参数。
+
+另：短毛犬蒙版**下缘贴版边**（底行 80 个有效像素；上/左/右余 19/31/16 px），版边余量按新语义记 inf——GUI 提示贴边，实验记录 `clearance_mm=null` 并打印说明；版边最大抬升=起伏上限属预期（该样例版边本就不平）。
+
+### 验证
+
+- 测试 +7（unit 4 + integration 1 + GUI 2 → **168 passed, 2 deselected**，161 → +7）：建议值数值钉扎（2.0→3.0/1.25→1.9/8.352108→12.6/40→50 封顶 + 非法输入）、版边余量已知布局（4.0；贴边 inf；全有效 0；空 inf）、坡度分类（墙场：跨界=cap/dx、域内 0；裙边场：跨界 ≤1.5×cap/带宽）、report 含 slope、GUI 自动填入/跟随/手改接管、截面对话框头部与画布。
+- ruff check / format / mypy（domain+application）通过；真实模型 2 项未重跑（R2 不触及推理内核）。
+- GUI 真机 smoke 复跑 ok：母版详情含"坡度（全域/边界过渡/域内）"行、侧面截面对话框可开（`runtime/evidence/photo-p2/p2-gui-section.png`）、过渡带建议提示在案。
+- 渲染目视：ratio-b12.6 侧视为宽裙边落地（约占宽度 50–60%）、顶面仅余 1–2 mm 级低台阶；explicit-b3.0-smooth 数值上全域最大 44.1°（残余为裙边公式斜率 1.5×2/3），轮廓已无近垂直断层。
+
+### 版本与剩余裁决
+
+- R2 提交见 `git log` 本条（feat(p2-r2)）；新标签 **`photo-relief-p2-r2`**（只新增；`photo-relief-p2-r1` 及更早标签未动）。
+- **审美裁决留给用户**（验收报告第 3 点明确不以数值测试替代）：请在 `experiments/photo_relief/out/p2-falloff-bands/`（18 张侧视/斜视渲染）中选定样式——带宽档（2.5/建议/2h/3h）与是否加平滑 1.5 mm；选定后可把该组合设为工程默认再进入模具链。`visual_review` 维持 **pending**（按用户指示本轮不勾选）。
+- 对照渲染与 report_data 路径：`experiments/photo_relief/out/p2-falloff-bands/{explicit-b*,ratio-b*}-{side,iso}-lightkit.png`、`report_data.json`（gitignored，本机留存）。

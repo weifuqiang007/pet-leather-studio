@@ -6,12 +6,14 @@ import pytest
 
 from pet_leather_studio.algorithms.relief_height import (
     apply_local_adjustments,
+    background_clearance_mm,
     cap_to_mm,
     clamp_cap,
     controlled_heights_mm,
     edge_falloff,
     image_to_geometry_rows,
     ratio_depth_mm,
+    slope_report,
     smooth_valid_aware,
     unit_height,
 )
@@ -21,6 +23,7 @@ from pet_leather_studio.domain.photo_relief import (
     LocalAdjustment,
     ReferenceProfile,
     ReliefParameters,
+    suggested_falloff_band_mm,
 )
 
 
@@ -414,3 +417,68 @@ def test_controlled_heights_deterministic_rerun_with_falloff() -> None:
     heights_b, report_b = controlled_heights_mm(*args)
     np.testing.assert_array_equal(heights_a, heights_b)
     assert report_a["falloff"] == report_b["falloff"]
+
+
+# ---- P2 复验 R2：建议带宽 / 版边余量 / 坡度统计 ----
+
+
+def test_suggested_falloff_band_mm_scales_with_depth() -> None:
+    """建议带宽 = ceil0.1(1.5×h/坡度上限)：2→3.0、1.25→1.9、8.352108→12.6、封顶 50。"""
+    assert suggested_falloff_band_mm(2.0) == pytest.approx(3.0)
+    assert suggested_falloff_band_mm(1.25) == pytest.approx(1.9)  # 1.875 向上取整
+    assert suggested_falloff_band_mm(8.352107938604037) == pytest.approx(12.6)
+    assert suggested_falloff_band_mm(40.0) == pytest.approx(50.0)  # 封顶带宽上限
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            suggested_falloff_band_mm(bad)
+
+
+def test_background_clearance_mm_known_layout() -> None:
+    """版边余量 = 边框像素到有效域的最小距离；主体贴边/空有效为 inf、全有效为 0。"""
+    valid = np.zeros((24, 32), dtype=bool)
+    valid[4:20, 8:24] = True
+    assert background_clearance_mm(valid, dx_mm=1.0, dy_mm=1.0) == pytest.approx(4.0)
+    stretched = background_clearance_mm(valid, dx_mm=0.5, dy_mm=1.0)  # 横向半距
+    assert stretched == pytest.approx(4.0)  # 上下边仍是最近约束
+    touching = valid.copy()
+    touching[0, 10] = True  # 主体贴版边：平边前提不成立，不再构成带宽约束
+    assert background_clearance_mm(touching, 1.0, 1.0) == float("inf")
+    assert background_clearance_mm(np.ones((5, 5), dtype=bool), 1.0, 1.0) == 0.0
+    assert background_clearance_mm(np.zeros((5, 5), dtype=bool), 1.0, 1.0) == float("inf")
+
+
+def test_slope_report_classifies_pairs() -> None:
+    """垂直墙场：跨界坡度 = cap/dx、域内 0；过渡带场：跨界坡度 ≤ 1.5×cap/band。"""
+    ny, nx, cap = 12, 20, 2.0
+    valid = np.zeros((ny, nx), dtype=bool)
+    valid[:, :10] = True
+    wall = np.where(valid, cap, 0.0)
+    wall_report = slope_report(wall, valid, dx_mm=0.5, dy_mm=1.0)
+    assert wall_report["boundary_max_mm_per_mm"] == pytest.approx(cap / 0.5)
+    assert wall_report["interior_max_mm_per_mm"] == 0.0
+    assert wall_report["max_overall_mm_per_mm"] == pytest.approx(cap / 0.5)
+    assert wall_report["boundary_max_deg"] == pytest.approx(75.96, abs=0.01)
+
+    band = 3.0
+    skirt, _ = edge_falloff(wall, valid, band, dx_mm=0.5, dy_mm=1.0)
+    skirt_report = slope_report(skirt, valid, dx_mm=0.5, dy_mm=1.0)
+    assert skirt_report["boundary_max_mm_per_mm"] <= 1.5 * cap / band + 1e-9
+    assert skirt_report["interior_max_mm_per_mm"] == 0.0  # 主体内部无断层
+    with pytest.raises(ValueError, match="形状不一致"):
+        slope_report(np.ones((4, 4)), np.ones((3, 3), dtype=bool), 1.0, 1.0)
+
+
+def test_controlled_heights_report_contains_slope() -> None:
+    """矩形有效域：无跨界对（boundary=0），域内坡度即全域最陡（斜坡 >0）。"""
+    ramp = np.repeat(np.linspace(1.0, 11.0, 12)[:, None], 61, axis=1)
+    _, report = controlled_heights_mm(
+        ramp,
+        np.ones((12, 61), dtype=bool),
+        DepthSemantics.RELATIVE_LARGER_NEARER,
+        ReliefParameters(width_mm=60.0, depth_mm=2.0),
+    )
+    slope = report["slope"]
+    assert slope["boundary_max_mm_per_mm"] == 0.0
+    assert slope["interior_max_mm_per_mm"] > 0.0
+    assert slope["max_overall_mm_per_mm"] == pytest.approx(slope["interior_max_mm_per_mm"])
+    assert 0.0 < slope["interior_max_deg"] < 90.0

@@ -64,6 +64,7 @@
 | `src/pet_leather_studio/presentation/photo_panel.py` | 新增 | 照片/蒙版/深度/中性模型切换、阶段状态及参数表单；不直接导入推理库 |
 | `src/pet_leather_studio/presentation/mask_editor.py` | 新增 | 叠加、缩放、画笔添加/擦除、撤销/重做；坐标映射独立测试 |
 | `src/pet_leather_studio/presentation/height_adjust_dialog.py` | 新增 | 局部结构调整对话框（P2 已实现）：高度色图底 + 刷选区域、每区域偏移/过渡、撤销/重做；复用 MaskCanvas，不写库 |
+| `src/pet_leather_studio/presentation/section_dialog.py` | 新增 | 侧面截面对话框（P2 复验 R2）：读母版 heightfield.npz，QPainter 自绘穿过最高点的横截面轮廓与最陡坡度；只读不写库 |
 | `src/pet_leather_studio/bootstrap/workbench.py` | 扩展 | 组装新旧服务，不放算法 |
 | `src/pet_leather_studio/__main__.py` | 扩展 | CLI 子命令，复用应用服务，不能另写一条不同业务流程 |
 | `src/pet_leather_studio/infrastructure/revisions.py` | 受控扩展 | 复用修订及锁；兼容旧数据、失败恢复和完整文件校验 |
@@ -396,3 +397,7 @@ scripts/dev.sh run --frozen pytest tests -m 'not real_model'
 ### R1 复验完成（GLM，2026-09-22）
 
 独立验收（[reports/photo-relief-P2-acceptance-review.md](reports/photo-relief-P2-acceptance-review.md)）判"视觉效果不通过"，必修项为蒙版边垂直墙。同日修复：`algorithms/relief_height.py` 新增 `edge_falloff`（域外带宽内 = 最近有效像素高度 × 1−smoothstep(d/带宽)；默认 `falloff_band_mm=2.5`，0=关；管线位置 cap_to_mm → falloff → 局部调整 → clamp；有效域内部逐位不变），CLI `--falloff-mm` / GUI 表单与母版详情同步。实测三样例 + ratio 跨界单格跳变中位 0.808–4.217 → 0.042–0.315 mm（降 13–26 倍），域内逐位一致；残余最大跳变为输入深度图固有断层（PH12 边界，前后不变）。测试 155 → **161 passed**（+6），ruff/mypy 通过，GUI smoke 复跑 ok。新标签 `photo-relief-p2-r1`（旧标签未动）；详细数据见交付报告"复验记录（R1）"节。
+
+### R2 复验完成（GLM，2026-09-22）
+
+用户裁定 R1 工程通过但视觉仍不通过（ratio 8.35 mm × 2.5 mm 带近垂直墙），验收报告 8b9a6ad 提出 R2 四点，已全部实现：`domain/photo_relief.py` 新增 `suggested_falloff_band_mm`（带宽 ≥ 1.5×起伏，ceil 0.1，封顶 50；8.352→12.6）；`algorithms/relief_height.py` 新增 `background_clearance_mm`（版边余量；主体贴版边返回 inf，GUI 提示而非收窄）与 `slope_report`（interior=输入深度断层 / boundary=过渡带落地 / overall 分类，入 manifest）；GUI 新增"过渡带建议"（自动填入、手改接管、版边余量约束）、母版详情坡度行、`presentation/section_dialog.py` 侧面截面对话框；新实验 `run_p2_falloff_bands.py` 9 臂带宽对照（显式 2.5–6.0 mm + 平滑臂、比例 2.5–25.1 mm）。**诚实结论：带宽是二阶因素**（各带宽臂最大坡度 ≈70°/85° 不变，由输入深度断层决定；加宽只让裙边变宽），**平滑半径 1.5 mm 是一阶手段**（边界/域内最大降至 15.2°/10.5°）；短毛犬蒙版下缘贴版边（余量 inf 语义）。测试 161 → **168 passed**（+7），ruff/mypy 通过，GUI smoke 复跑 ok。新标签 `photo-relief-p2-r2`（旧标签未动）；审美选择（带宽档/是否平滑）留给用户从对照渲染选定，`visual_review` 维持 pending。详细数据见交付报告"复验记录（R2）"节。

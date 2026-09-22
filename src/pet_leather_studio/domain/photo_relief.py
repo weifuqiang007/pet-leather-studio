@@ -24,6 +24,10 @@ TRANSITION_MM_RANGE = (0.0, 50.0)
 # 高度在带宽内平滑落至背景 0——不改变 valid 的统计语义，只做几何过渡。
 FALLOFF_BAND_MM_RANGE = (0.0, 50.0)
 DEFAULT_FALLOFF_BAND_MM = 2.5
+# 过渡带宽度建议（P2 复验 R2）：smoothstep 坡面最陡 1.5×h/band，据此按解析
+# 起伏给出最小带宽；版边保留平坦环带，过渡带不得抬起版面边缘。
+FALLOFF_MAX_SLOPE = 1.0  # 建议坡度上限（mm/mm；1.0 = 45°）
+FALLOFF_BORDER_CLEARANCE_MM = 2.0
 # 参考标定稳健统计默认百分位（仅在选定有效正面区域与基准之后应用）
 DEFAULT_PERCENTILE = 99.0
 # 深度发布时的最小有效覆盖率（工程阈值，PH04：面积不足明确报错）
@@ -226,3 +230,18 @@ class ReliefParameters:
             raise ValueError("smoothing_radius_mm 超出允许范围（单位 mm）")
         if not math.isfinite(self.detail_strength) or self.detail_strength < 0.0:
             raise ValueError("detail_strength 不能为负")
+
+
+def suggested_falloff_band_mm(depth_mm: float) -> float:
+    """按解析最大起伏给出建议过渡带宽（P2 复验 R2）。
+
+    smoothstep 坡面最陡斜率 = 1.5×h/band ≤ FALLOFF_MAX_SLOPE ⇒ band ≥ 1.5×h；
+    向上取整到 0.1 mm 保证界仍成立，再封顶到带宽上限。仅是工程建议（起点），
+    审美取舍由用户在对照渲染中选定，不由本函数替代。
+    """
+
+    depth = float(depth_mm)
+    if not math.isfinite(depth) or depth <= 0.0:
+        raise ValueError("建议带宽需要正的有限起伏深度")
+    band = math.ceil(1.5 * depth / FALLOFF_MAX_SLOPE * 10.0) / 10.0
+    return min(band, FALLOFF_BAND_MM_RANGE[1])

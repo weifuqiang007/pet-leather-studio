@@ -4,6 +4,7 @@
 y=H 缘为 0；顶面为平面（体积有解析值），OBJ/STL 重读后独立复核。
 """
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -330,3 +331,15 @@ def test_master_falloff_smooths_nonrectangular_boundary(tmp_path: Path) -> None:
     # （旧垂直墙的单格跳变≈cap=2.0 mm）
     assert jump <= 1.5 * cap / band * max(dx, dy) + 1e-9
     assert jump < cap
+
+
+def test_master_metadata_records_slope(tmp_path: Path) -> None:
+    """P2 复验 R2：manifest 记录顶面坡度统计（全域/边界/域内分开，含角度）。"""
+    _, metadata = _build(tmp_path)
+    slope = metadata["slope"]
+    assert slope["boundary_max_mm_per_mm"] == 0.0  # 矩形有效域无跨界对
+    assert slope["interior_max_mm_per_mm"] > 0.0  # 行斜坡
+    assert slope["max_overall_mm_per_mm"] == pytest.approx(slope["interior_max_mm_per_mm"])
+    assert slope["interior_max_deg"] == pytest.approx(
+        math.degrees(math.atan(slope["interior_max_mm_per_mm"]))
+    )

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import uuid
 from pathlib import Path
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from pet_leather_studio.algorithms.relief_height import (
+    background_clearance_mm,
     controlled_heights_mm,
     image_to_geometry_rows,
     unit_height,
@@ -46,11 +48,14 @@ from pet_leather_studio.domain.photo_relief import (
     DEFAULT_FALLOFF_BAND_MM,
     DEPTH_MM_RANGE,
     FALLOFF_BAND_MM_RANGE,
+    FALLOFF_BORDER_CLEARANCE_MM,
+    FALLOFF_MAX_SLOPE,
     WIDTH_MM_RANGE,
     DepthSemantics,
     HeightMode,
     LocalAdjustment,
     ReliefParameters,
+    suggested_falloff_band_mm,
 )
 from pet_leather_studio.infrastructure.reference_profile import (
     EXCLUDED_POINTS_LIMIT,
@@ -58,6 +63,7 @@ from pet_leather_studio.infrastructure.reference_profile import (
 )
 from pet_leather_studio.presentation.height_adjust_dialog import HeightAdjustDialog
 from pet_leather_studio.presentation.mask_editor import MaskEditorDialog
+from pet_leather_studio.presentation.section_dialog import CrossSectionDialog
 
 VIEW_PHOTO = "原图"
 VIEW_MASK = "蒙版"
@@ -90,6 +96,9 @@ class PhotoWorkbenchWindow(QMainWindow):
         self._job_clears_adjustments = False
         self._profiles_cache: list = []
         self._last_depth_shape: list[int] | None = None
+        self._falloff_autoset: float | None = None  # 最近一次自动填入的建议带宽
+        self._falloff_syncing = False  # 自动填入引发 valueChanged 的重入保护
+        self._section_dialog: CrossSectionDialog | None = None
         self.setWindowTitle("照片 → 浮雕 · P2（人工蒙版 → 真实深度 → 受控浮雕化母版）")
         self.resize(1320, 860)
         content = QWidget()
@@ -170,6 +179,9 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.falloff_band.setValue(DEFAULT_FALLOFF_BAND_MM)
         self.falloff_band.valueChanged.connect(self._on_master_parameters_changed)
         master_form.addRow("边缘过渡宽度 mm（0=关）", self.falloff_band)
+        self.falloff_hint = QLabel("（待深度推理）")
+        self.falloff_hint.setWordWrap(True)
+        master_form.addRow("过渡带建议", self.falloff_hint)
         self.base_thickness = QDoubleSpinBox()
         self.base_thickness.setRange(BASE_THICKNESS_MM_RANGE[0], BASE_THICKNESS_MM_RANGE[1])
         self.base_thickness.setDecimals(1)
@@ -191,6 +203,9 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.excluded_button = QPushButton("查看参考排除点（红色标记被百分位裁掉的点）")
         self.excluded_button.clicked.connect(self.show_excluded_points)
         controls.addWidget(self.excluded_button)
+        self.section_button = QPushButton("侧面截面…（穿过最高点的横截面）")
+        self.section_button.clicked.connect(self.show_section)
+        controls.addWidget(self.section_button)
 
         controls.addWidget(QLabel("历史版本（选中仅预览；激活才回退）"))
         self.versions = QComboBox()
@@ -347,6 +362,7 @@ class PhotoWorkbenchWindow(QMainWindow):
         if depth is not None and depth.get("depth_shape"):
             self._last_depth_shape = [int(value) for value in depth["depth_shape"]]
             self._update_px_hint()
+            self._update_falloff_hint()
         target = self.view.currentText()
         try:
             photo_master = kind == "master" and data.get("input_method") == "photo_reconstruction"
@@ -505,6 +521,69 @@ class PhotoWorkbenchWindow(QMainWindow):
         if not in_range:
             hint += "（超出工程范围，生成将被拒绝；请改显式深度）"
         self.ratio_hint.setText(hint)
+        self._update_falloff_hint()
+
+    def _update_falloff_hint(self) -> None:
+        """R2：按解析起伏建议过渡带宽（未手动改过时自动填入），并受版边余量约束。"""
+        if self._falloff_syncing:
+            return
+        mode = self.height_mode.currentData()
+        if mode == HeightMode.REFERENCE_RATIO:
+            profile = self._current_profile()
+            if profile is None:
+                self.falloff_hint.setText("（选标定后按解析深度给出建议带宽）")
+                return
+            depth = (
+                profile.effective_relief_mm / profile.reference_width_mm * self.master_width.value()
+            )
+        else:
+            depth = self.master_depth.value()
+        suggested = suggested_falloff_band_mm(depth)
+        cap_deg = math.degrees(math.atan(FALLOFF_MAX_SLOPE))
+        note = f"按深度 {depth:.2f} mm 建议 ≥ {suggested:.1f} mm（最陡坡度 ≤{cap_deg:.0f}°）"
+        valid = self._latest_depth_valid()
+        if valid is not None and valid.any() and not valid.all():
+            rows, cols = valid.shape
+            dx = self.master_width.value() / max(cols - 1, 1)
+            dy = dx * rows / max(rows - 1, 1)
+            clearance = background_clearance_mm(valid, dx, dy)
+            if math.isinf(clearance):
+                note += "；主体已贴版边（版边本就不平；如需平边请修蒙版或加宽版面）"
+            else:
+                capped = clearance - FALLOFF_BORDER_CLEARANCE_MM
+                if suggested > capped:
+                    suggested = round(max(capped, 0.1), 1)  # 与 spin 小数位对齐，保自动跟随
+                    note += (
+                        f"；版边余量仅 {clearance:.1f} mm，收窄为 {suggested:.1f}"
+                        f"（保留 {FALLOFF_BORDER_CLEARANCE_MM:.0f} mm 平边）"
+                    )
+                    if capped <= 0.1:
+                        note += "——主体贴近版边，建议减小起伏或加宽版面"
+                else:
+                    note += f"；版边余量 {clearance:.1f} mm"
+        if self.falloff_band.value() in (DEFAULT_FALLOFF_BAND_MM, self._falloff_autoset):
+            self._falloff_syncing = True
+            try:
+                self.falloff_band.setValue(suggested)
+            finally:
+                self._falloff_syncing = False
+            self._falloff_autoset = suggested
+            note += "（已自动填入，可手改）"
+        self.falloff_hint.setText(note)
+
+    def _latest_depth_valid(self) -> np.ndarray | None:
+        """当前照片最新深度修订的有效域（建议带宽的版边余量要用它）。"""
+        data = self._selected()
+        if data is None:
+            return None
+        _, _, depth = self._preview_chain(data)
+        if depth is None:
+            return None
+        path = self.service.store.directory(depth["id"]) / "depth.npz"
+        if not path.is_file():
+            return None
+        with np.load(path) as npz:
+            return np.asarray(npz["valid"], dtype=bool)
 
     def _on_master_parameters_changed(self) -> None:
         self._sync_master_form()
@@ -591,6 +670,14 @@ class PhotoWorkbenchWindow(QMainWindow):
                 f"边缘过渡：带宽 {falloff.get('band_mm')} mm；域外抬升 "
                 f"{falloff.get('raised_points')} 点（最高 {falloff.get('max_raised_mm'):.2f} mm；"
                 "主体内部高度未变，无垂直墙）"
+            )
+        slope = data.get("slope", {})
+        if slope.get("max_overall_mm_per_mm") is not None:
+            lines.append(
+                f"坡度：全域最陡 {slope.get('max_overall_deg'):.1f}°；"
+                f"边界过渡 {slope.get('boundary_max_deg'):.1f}°；"
+                f"域内 {slope.get('interior_max_deg'):.1f}°"
+                "（域内为输入深度固有断层，可用平滑半径缓解；建议带宽 ≥ 1.5×起伏）"
             )
         if clamp.get("clamped_points") or clamp.get("clamped_below_points"):
             lines.append(
@@ -818,6 +905,28 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"基准 {profile.datum_method} z={profile.datum_z}；区域 {profile.region_basis} "
             f"{tuple(round(value, 2) for value in profile.region)}"
         )
+
+    def show_section(self) -> None:
+        """R2：选中照片母版修订 → 侧面截面对话框（读已发布 heightfield.npz）。"""
+        data = self._selected()
+        if (
+            not data
+            or data.get("kind") != "master"
+            or data.get("input_method") != "photo_reconstruction"
+        ):
+            QMessageBox.information(self, "侧面截面", "请先在历史中选中照片母版（master）修订。")
+            return
+        path = self.service.store.directory(data["id"]) / "heightfield.npz"
+        if not path.is_file():
+            QMessageBox.warning(self, "侧面截面", f"缺少 heightfield.npz：{path}")
+            return
+        with np.load(path) as npz:
+            heights, valid = npz["heights_mm"], npz["valid"]
+            dx_mm, dy_mm = float(npz["dx_mm"]), float(npz["dy_mm"])
+        dialog = CrossSectionDialog(self)
+        dialog.set_section(heights, valid, dx_mm, dy_mm)
+        dialog.show()  # 非模态：可与三维视图并排对照
+        self._section_dialog = dialog  # 持引用防回收
 
     def _height_colormap(self, unit: np.ndarray) -> np.ndarray:
         positions = np.linspace(0.0, 1.0, len(_COLORMAP_ANCHORS))
