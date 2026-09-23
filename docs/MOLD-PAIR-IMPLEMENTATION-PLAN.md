@@ -1,6 +1,6 @@
 # 皮革压制阴阳模生成规划书
 
-**状态**：M1 代码与候选文件已交付（2026-09-23，标签 `leather-mold-m1`）；R1（`leather-mold-m1-r1`）已将点到点 KD-tree 更换为点到三角面测距并重新生成三份候选，但仍以未扣采样界的 `min_mm` 放行，三份 `conservative_min_mm` 均低于验收门，故 M1 几何验收**尚未通过**。详见 `docs/reports/leather-mold-M1-acceptance-review.md`。M2/M3 待实现。
+**状态**：M1 代码与候选文件已交付（2026-09-23，标签 `leather-mold-m1`）；R1（`leather-mold-m1-r1`）将独立测距换为双向点到三角面，R2（`leather-mold-m1-r2`）把放行门改为证书化保守下界 `conservative_min_mm = min − sampling_bound ≥ t_eff − 容差` 并重新生成三份候选（guard 1×容差档全部过保守门）。M1 几何验收是否记为通过待用户复验判定，详见 `docs/reports/leather-mold-M1-acceptance-review.md` 与 `docs/reports/leather-mold-M1.md`。M2/M3 待实现。
 **前置输入**：已冻结并通过视觉复核的照片浮雕母版修订。  
 **目标**：从一份 `master` 母版生成可 3D 打印的阳模、阴模 OBJ/STL 文件，并保存可复算的配合间隙、皮革参数、版本关系和几何验收结果。
 

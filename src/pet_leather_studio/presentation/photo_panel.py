@@ -821,6 +821,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"{check.get('min_mm', 0.0):.3f} mm"
             f"（点到三角面双向，容差 {data.get('distance_tolerance_mm', 0.0):.3f}；"
             f"采样界 {check.get('sampling_bound_mm', 0.0):.3f}；"
+            f"保守下界 {check.get('conservative_min_mm', 0.0):.3f} 为放行门；"
             f"双向采样 {check.get('samples_a', 0)}/{check.get('samples_b', 0)} 点 ×"
             f"{check.get('points_per_face', 0)}/面；guard {check.get('guard_mm', 0.0):.3f} mm）",
             f"Z 向间隙最小 {data.get('axial_gap_min_mm', 0.0):.3f} mm（>0 不相交）；"

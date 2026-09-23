@@ -134,7 +134,9 @@ def _readme_text(parameters: LeatherMoldParameters, metadata: dict[str, Any]) ->
             f"有效皮厚 t_eff = {metadata['target_effective_thickness_mm']:.3f} mm；"
             f"独立实测最小距离 {metadata['clearance_independent']['min_mm']:.3f} mm"
             f"（点到三角面双向，容差 {metadata['distance_tolerance_mm']:.3f} mm，"
-            f"采样界 {metadata['clearance_independent']['sampling_bound_mm']:.3f} mm）",
+            f"采样界 {metadata['clearance_independent']['sampling_bound_mm']:.3f} mm，"
+            f"保守下界 {metadata['clearance_independent']['conservative_min_mm']:.3f} mm"
+            " 为放行门）",
             f"版面：{metadata['plate']['final_width_mm']:.1f} × "
             f"{metadata['plate']['final_height_mm']:.1f} mm{expansion_note}",
             f"几何校验：{metadata['geometry_checks']}",
@@ -189,7 +191,10 @@ class LeatherMoldGeometry:
         final_height = height + 2 * expansion.get("pad_y_px", 0) * dy
         male_contact = heights + float(parameters.backing_mm)
 
-        # 球形偏置上包络 + 独立距离验收；离散不足时 guard 逐级加密重算（§3.2）
+        # 球形偏置上包络 + 独立距离验收；离散不足时 guard 逐级加密重算（§3.2）。
+        # 放行门是保守下界 conservative_min_mm = min − 采样界（连续表面间隙的
+        # 证书化下界），不是未扣采样界的 min_mm——采样点之间的连续表面误差
+        # 必须被扣除后才构成可证明的放行依据（M1-R2）。
         tolerance = distance_tolerance_mm(dx, dy)
         female_inner: np.ndarray | None = None
         kernel_report: dict[str, Any] | None = None
@@ -203,14 +208,16 @@ class LeatherMoldGeometry:
             female_surface = grid_surface_trimesh(female_inner, final_width, final_height)
             clearance_check = bidirectional_min_distance(male_surface, female_surface)
             clearance_check["guard_mm"] = guard
-            if clearance_check["min_mm"] >= t_effective - tolerance:
+            if clearance_check["conservative_min_mm"] >= t_effective - tolerance:
                 break
         if female_inner is None or kernel_report is None or clearance_check is None:
             raise ValueError("包络/验收计算未执行（内部错误）")
-        if clearance_check["min_mm"] < t_effective - tolerance:
+        if clearance_check["conservative_min_mm"] < t_effective - tolerance:
             raise ValueError(
-                f"独立最近距离 {clearance_check['min_mm']:.4f} mm < "
-                f"t_eff−容差 {t_effective - tolerance:.4f} mm（guard 已试 "
+                f"独立最近距离保守下界 {clearance_check['conservative_min_mm']:.4f} mm < "
+                f"t_eff−容差 {t_effective - tolerance:.4f} mm"
+                f"（原始最小 {clearance_check['min_mm']:.4f} − 采样界 "
+                f"{clearance_check['sampling_bound_mm']:.4f}；guard 已试 "
                 f"{[step * tolerance for step in GUARD_STEPS]} mm）；拒绝发布"
             )
 
@@ -264,6 +271,7 @@ class LeatherMoldGeometry:
             independent_a_to_b_mm=clearance_check["a_to_b_mm"],
             independent_b_to_a_mm=clearance_check["b_to_a_mm"],
             independent_sampling_bound_mm=clearance_check["sampling_bound_mm"],
+            independent_conservative_min_mm=clearance_check["conservative_min_mm"],
             subdivision_order=clearance_check["subdivision_order"],
             distance_method=np.array(clearance_check["method"]),
             independent_stats=np.array(

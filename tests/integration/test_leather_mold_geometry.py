@@ -12,7 +12,13 @@ import numpy as np
 import pytest
 import trimesh
 
-from pet_leather_studio.algorithms.leather_mold_pair import distance_tolerance_mm
+from pet_leather_studio.algorithms.leather_mold_pair import (
+    bidirectional_min_distance,
+    distance_tolerance_mm,
+    expand_heightfield,
+    grid_surface_trimesh,
+    spherical_envelope,
+)
 from pet_leather_studio.domain.leather_molds import (
     LeatherMoldParameters,
     effective_thickness_mm,
@@ -80,6 +86,8 @@ def test_generate_full_file_set_and_independent_clearance(tmp_path: Path) -> Non
     assert metadata["manufacturing_validated"] is False
     check = metadata["clearance_independent"]
     assert check["min_mm"] >= t_eff - tolerance  # 独立测距验收（§7）
+    # M1-R2：放行门是保守下界（min − 采样界），不是未扣采样界的原始值
+    assert check["conservative_min_mm"] >= t_eff - tolerance
     assert check["guard_mm"] in {step * tolerance for step in GUARD_STEPS}
     # M1-R1：验收器是精确点到三角面（重心细分采样 + 半径证书），可复算
     assert "point-to-triangle" in check["method"]
@@ -112,11 +120,74 @@ def test_generate_full_file_set_and_independent_clearance(tmp_path: Path) -> Non
         assert pair["independent_a_to_b_mm"] == pytest.approx(check["a_to_b_mm"])
         assert pair["independent_b_to_a_mm"] == pytest.approx(check["b_to_a_mm"])
         assert pair["independent_sampling_bound_mm"] == pytest.approx(check["sampling_bound_mm"])
+        assert pair["independent_conservative_min_mm"] == pytest.approx(
+            check["conservative_min_mm"]
+        )
         assert int(pair["subdivision_order"]) == check["subdivision_order"]
         assert "point-to-triangle" in str(pair["distance_method"])
         assert pair["male_contact_mm"].shape == tuple(metadata["plate"]["grid"])
         assert np.all(pair["normal_clearance_mm"] <= pair["axial_gap_mm"] + 1e-12)
         assert bool(pair["flat_stop"][0, 0])  # 扩边后版缘是纯平止口
+
+
+def test_conservative_bound_gate_escalates_guard(tmp_path: Path) -> None:
+    """M1-R2 回归：guard=0 原始 min_mm 过门但保守下界不过门 → guard 必须升档。
+
+    旧放行逻辑只看未扣采样界的 min_mm，会在该状态下发布；新逻辑要求
+    conservative_min_mm = min − sampling_bound 过门，guard 从 0 升到 1×容差。
+    """
+
+    parameters = LeatherMoldParameters()
+    t_eff = effective_thickness_mm(parameters)
+    metadata, _stage = _generate(tmp_path, _ramp(), np.ones((16, 49), dtype=bool), parameters)
+    check = metadata["clearance_independent"]
+
+    # 复算 guard=0 状态：与生产同链路（贴边 → 扩边 → 包络 R=t_eff → 双向测距）
+    with np.load(tmp_path / "heightfield.npz") as src:
+        heights = src["heights_mm"]
+    padded, _report = expand_heightfield(
+        heights,
+        1.0,
+        1.0,
+        existing_flat_mm=0.0,
+        edge_margin_mm=parameters.edge_margin_mm,
+        max_plate_mm=parameters.max_plate_mm,
+        plate_width_mm=48.0,
+        plate_height_mm=15.0,
+    )
+    male_contact = padded + parameters.backing_mm
+    envelope, _kernel = spherical_envelope(male_contact, 1.0, 1.0, t_eff)
+    final_width = float(padded.shape[1] - 1)  # dx=dy=1 → 尺寸 = 格数 − 1
+    final_height = float(padded.shape[0] - 1)
+    male_surface = grid_surface_trimesh(male_contact, final_width, final_height)
+    female_surface = grid_surface_trimesh(envelope, final_width, final_height)
+    plain = bidirectional_min_distance(male_surface, female_surface)
+    tolerance = distance_tolerance_mm(1.0, 1.0)
+    assert plain["min_mm"] >= t_eff - tolerance  # 旧门：原始值通过（会被旧逻辑放行）
+    assert plain["conservative_min_mm"] < t_eff - tolerance  # 新门：保守下界失败
+    # 发布结果必须已升档（guard=1×容差）且保守下界过门
+    assert check["guard_mm"] == pytest.approx(tolerance)
+    assert check["conservative_min_mm"] >= t_eff - tolerance
+    assert check["min_mm"] > plain["min_mm"]  # guard 加密真实抬高了间隙
+
+
+def test_conservative_bound_rejects_when_all_guards_fail(tmp_path: Path) -> None:
+    """M1-R2 回归：三档 guard 后保守下界仍不过门 → 拒绝发布且 stage 为空。"""
+
+    heights = np.zeros((21, 21))
+    heights[10, 10] = 5.0  # 单格 5 mm 尖峰（近垂直壁）：包络无法侧向表达
+    source = tmp_path / "heightfield.npz"
+    _write_heightfield(source, heights, np.ones((21, 21), dtype=bool))
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    with pytest.raises(ValueError, match="保守下界"):
+        LeatherMoldGeometry().generate_leather_molds(
+            source,
+            {"id": MASTER_ID, "falloff": {"band_mm": 2.5}},
+            LeatherMoldParameters(),
+            stage,
+        )
+    assert list(stage.iterdir()) == []  # 拒绝发生在写文件之前
 
 
 def test_expanded_core_bitwise_and_reloaded_solids(tmp_path: Path) -> None:

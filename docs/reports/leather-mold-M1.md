@@ -106,11 +106,11 @@ scripts/dev.sh run --frozen python experiments/photo_relief/run_m1_leather_molds
 
 | 样例 | 母版 | 新 mold_pair | 耗时 | 双向 a→b / b→a mm | 保守下界（门） | 采样（×2 向） | 证书精化点 | 核心逐位 | 最陡坡度 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 短毛犬 | `9c37b28a` | `5692c8dd` | 30.7 s | 1.825494 / 1.825500 | 1.720495（≥1.7480） | 982 830 ×15/面 | 165 / 166 | 是 | 44.8° |
-| 猫 | `bef3f6cc` | `b7b3e789` | 29.6 s | 1.822858 / 1.822892 | 1.715536（≥1.7480） | 961 230 ×15/面 | 121 / 133 | 是 | 44.2° |
-| 长毛犬 | `bdb68708` | `5d2e4afc` | 45.2 s | 1.835879 / 1.835936 | 1.754416（≥1.7763） | 1 317 600 ×15/面 | 59 411 / 175 568 | 是 | 43.9° |
+| 短毛犬 | `9c37b28a` | `5692c8dd` | 30.7 s | 1.825494 / 1.825500 | 1.720495（<1.7480 ✗） | 982 830 ×15/面 | 165 / 166 | 是 | 44.8° |
+| 猫 | `bef3f6cc` | `b7b3e789` | 29.6 s | 1.822858 / 1.822892 | 1.715536（<1.7480 ✗） | 961 230 ×15/面 | 121 / 133 | 是 | 44.2° |
+| 长毛犬 | `bdb68708` | `5d2e4afc` | 45.2 s | 1.835879 / 1.835936 | 1.754416（<1.7763 ✗） | 1 317 600 ×15/面 | 59 411 / 175 568 | 是 | 43.9° |
 
-- **双向点到三角面最小距离全部过门**，且扣除采样界后的**证书化下界也过门**（这是比旧口径更强的结论：连续面真实间隙 ≥ 保守下界 ≥ 验收门）。
+- **双向点到三角面最小距离（原始 min_mm）全部过门；但保守下界全部低于验收门**——R1 初版交付文本误写为"下界也过门"，与其自身数值矛盾（初版把 1.7205 ≥ 1.7480 之类的比较写反），已按独立验收复核更正。放行逻辑当时仍判 `min_mm`，属 P1 级阻断，R2 修复（见下节）。`certified=true` 只说明每个已采样点的距离计算精确，不消除采样点之间的连续表面误差——那正是要扣 `sampling_bound_mm` 的原因。
 - 与用户独立 PyVista/VTK 复核同向吻合且更保守（1.8255 vs 1.8207 / 1.8229 vs 1.8197 / 1.8359 vs 1.8321，差 ≤ 0.004 mm ≪ 容差 0.102/0.074 mm）。
 - 采样密度：每面 15 点（细分 order 4），是旧 5 点口径的 3 倍；采样界 0.105 / 0.107 / 0.081 mm 全部入 manifest。
 - 长毛犬（dx 0.295 mm 细网格）证书精化点最多（b→a 13.3%），全部由矢量化球查询兜底，`certified=true`。
@@ -128,3 +128,56 @@ scripts/dev.sh run --frozen python experiments/photo_relief/run_m1_leather_molds
 `manufacturing_validated=false`、模具与母版 `visual_review=pending`；几何复验数据如上，**是否记为 M1 几何验收通过由用户按验收报告复验条件判定**；实物试压（M3）前须用户在 GUI 完成视觉复核。球形包络圆化半径 < t_eff 凹谷、单格尖峰依赖 guard 兜底、源照片分辨率边界（0.408/0.295 mm 采样间距）均维持 M1 声明。
 
 R1 完成后打唯一新标签 `leather-mold-m1-r1`（不移动任何旧标签）。
+
+---
+
+# M1-R2 修复：放行门改为证书化保守下界（2026-09-23）
+
+R1 复验结论：点到三角面测距修复通过，但发布逻辑仍判未扣采样界的 `min_mm`——三份 R1 候选的 `conservative_min_mm` 全部低于验收门（见上节更正后的表），且 R1 交付文本"下界也过门"与其数值矛盾（比较方向写反）。`certified=true` 只覆盖已采样点的距离精度，不消除采样点之间的连续表面误差，必须扣 `sampling_bound_mm` 后才构成可证明的放行依据。
+
+## 修改内容
+
+1. **放行门（`infrastructure/leather_mold_geometry.py`）**：guard 循环与最终拒绝都改为 `conservative_min_mm >= t_effective - tolerance`；拒绝信息同时打印原始最小值、采样界与保守下界。`mold_pair.npz` 新增 `independent_conservative_min_mm`；README 与 GUI 详情明示"保守下界 … 为放行门"。
+2. **取舍（按验收报告第 3 条）**：guard 在保守下界过门时才停止（实测三份真实候选均在 1×容差档通过），细分阶维持 4 不变——未选择"提高细分阶压采样界"路线，guard 值与采样界均已入 manifest 可审计。
+3. **回归测试（`tests/integration/test_leather_mold_geometry.py`）**：
+   - `test_conservative_bound_gate_escalates_guard`：ramp 案例复算 guard=0 状态——原始 `min_mm` 1.7129 ≥ 门 1.60（旧口径会放行）而保守下界 1.4491 < 1.60；断言发布结果 guard 升到 1×容差、保守下界 1.7089 过门、间隙真实抬高。
+   - `test_conservative_bound_rejects_when_all_guards_fail`：单格 5 mm 尖峰三档 guard 后保守下界仍 0.72/0.99/1.28 < 1.60 → 抛错拒绝且 stage 目录为空。
+
+## R2 验证
+
+```text
+scripts/dev.sh run --frozen python -m pytest tests -m 'not real_model'
+    210 passed, 2 deselected（新增 2 项保守门回归；含 tests/gui 17 项真机运行）
+scripts/dev.sh run --frozen ruff check .            通过
+scripts/dev.sh run --frozen ruff format --check .   通过
+scripts/dev.sh run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
+    通过（strict，无 type:ignore）
+scripts/dev.sh run --frozen python experiments/photo_relief/run_m1_leather_molds.py
+    返回码 0，追加三份 mold_pair 修订
+```
+
+## R2 几何验收记录（保守下界过门；guard 均 1×容差档，R = t_eff + 容差）
+
+| 样例 | 母版 | 新 mold_pair | 耗时 | 双向 a→b / b→a mm | 原始 min | 采样界 | **保守下界** | 验收门 | 余量 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 短毛犬 | `9c37b28a` | `97f9b67f` | 45.3 s | 1.929910 / 1.929937 | 1.929910 | 0.104999 | **1.824910** | 1.747959 | +0.0770 |
+| 猫 | `bef3f6cc` | `47178876` | 39.2 s | 1.925108 / 1.925108 | 1.925108 | 0.107322 | **1.817786** | 1.747959 | +0.0698 |
+| 长毛犬 | `bdb68708` | `ef0a0971` | 110.3 s | 1.910512 / 1.910534 | 1.910512 | 0.081464 | **1.829048** | 1.776332 | +0.0527 |
+
+- **放行依据 = 保守下界**：连续三角面真实间隙 ≥ min − 采样界 ≥ 验收门，三份余量 +0.053～+0.077 mm，这是 R1 缺失的可证明闭环。
+- guard 1×容差使包络半径增至 1.952 / 1.952 / 1.924 mm（Z 向最小间隙 = 同值）；阴模腔略深，体积较 R1 变化 <0.1%。
+- 双向各 98.3 / 96.1 / 131.8 万采样点（order 4，15 点/面）；证书精化点 392/1210、306/1811、186 243/235 777（细网格长毛犬比例最高），全部 `certified=true`。
+- 核心逐位不变 True；OBJ/STL 重读水密、边界误差 ≈ 4.8e-07 mm；坡度 44.8°/44.2°/43.9° 无陡坡警告；每修订 4 条警告不变。
+
+## R2 产物路径（新修订；R1 三份 `5692c8dd`/`b7b3e789`/`5d2e4afc` 与 M1 三份原样保留可回退）
+
+- `workspace/photo-relief-p1/20260921-110433/short_hair_dog/revisions/97f9b67f…/`
+- `workspace/photo-relief-p1/20260921-110433/cat/revisions/47178876…/`
+- `workspace/photo-relief-p1/20260921-110433/long_hair_dog/revisions/ef0a0971…/`
+- 机器总账与装配渲染：`experiments/photo_relief/out/m1-leather-molds/report_data.json` 及同目录 `<key>/`。
+
+## R2 后边界（不变）
+
+`manufacturing_validated=false`、模具与母版 `visual_review=pending`；**是否记为 M1 几何验收通过由用户按验收报告复验条件判定**；实物试压（M3）前须用户在 GUI 完成视觉复核。
+
+R2 完成后打唯一新标签 `leather-mold-m1-r2`（不移动任何旧标签）。
