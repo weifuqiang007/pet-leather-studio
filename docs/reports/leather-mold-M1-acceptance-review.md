@@ -93,3 +93,50 @@ M1 可以改为“通过”的必要条件如下：
   `t_effective - distance_tolerance_mm`；
 - 模具、母版继续保持 `manufacturing_validated=false`，直到用户完成视觉复核与实际试压。
 
+---
+
+## R1 复验（提交 `576937d`，标签 `leather-mold-m1-r1`）
+
+**结论：P0 的测距方法修复通过，但 M1 几何验收仍不通过。**
+
+### 已关闭的部分
+
+- `bidirectional_min_distance()` 已不再使用点到点 KD-tree 作为结果，而是以每面 15 个
+  重心细分点，分别计算到对面三角网格的精确点到三角面距离。质心 KD-tree 只用于缩小
+  候选面，并有半径证书和球查询兜底；这符合“独立于包络公式”的要求。
+- `manifest.json` 与 `mold_pair.npz` 已记录测距方法、细分阶、采样数、双向距离、
+  `sampling_bound_mm`、`conservative_min_mm` 及证书统计。
+- 内部最近点反例真实存在且测试正确：旧五点点集测距为 0.731 mm（会越过 0.5 mm 门），
+  新测距为 0.120 mm，证明本次替换解决了原 P0 的方法缺陷。
+- 三份新修订 `5692c8dd`、`b7b3e789`、`5d2e4afc` 已 append-only 生成；
+  标签、远端和完整回归可复算。实测：`208 passed, 2 deselected`；ruff、format、
+  strict mypy 均通过。
+
+### 未关闭的阻断项：证书化下界没有作为放行门
+
+R1 正确把 `conservative_min_mm = min_mm - sampling_bound_mm` 定义为连续表面的保守下界，
+但发布代码仍只判断 `min_mm >= t_effective - distance_tolerance_mm`。这使三份新候选在
+原始采样最小值上被放行，而在其声称更严格的证书化下界上全部失败：
+
+| 样本 | `min_mm` | `sampling_bound_mm` | `conservative_min_mm` | 验收门 | 下界是否过门 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 短毛犬 `5692c8dd` | 1.825494 | 0.104999 | 1.720495 | 1.747959 | 否 |
+| 猫 `b7b3e789` | 1.822858 | 0.107322 | 1.715536 | 1.747959 | 否 |
+| 长毛犬 `5d2e4afc` | 1.835879 | 0.081464 | 1.754416 | 1.776332 | 否 |
+
+因此交付报告中“扣除采样界后的证书化下界也过门”与其自身数值矛盾。`certified=true`
+只说明每一个**已采样点**到对面三角网格的最近距离计算精确；它不消除采样点之间的
+连续表面误差。正是 `sampling_bound_mm` 需要被扣除的原因。
+
+### 必须修正后再复验
+
+1. 在 `LeatherMoldGeometry.generate_leather_molds()` 的 guard 循环和最终拒绝条件中，
+   将放行门改为 `clearance_check["conservative_min_mm"] >= t_effective - tolerance`；
+   错误信息同时打印原始最小值、采样界和保守下界。
+2. 新增集成回归：构造一个 `min_mm` 过门、`conservative_min_mm` 不过门的案例，断言
+   guard 继续尝试；若三档后仍失败，stage 必须为空且没有发布修订。
+3. 重新生成三份模具修订。优先让 guard 在下界过门时才停止；如果设计上不希望增加
+   额外间隙，则提高包络和验收细分阶、重新计算采样界，并把其取舍作为明确参数记录。
+4. 更正 [leather-mold-M1.md](leather-mold-M1.md) 的 R1 表格和结论，不能在上述门改变
+   前将 M1 写为几何验收通过。
+
