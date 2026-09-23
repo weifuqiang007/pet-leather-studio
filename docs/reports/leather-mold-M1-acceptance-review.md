@@ -1,0 +1,95 @@
+# 皮革压制阴阳模 M1 独立验收复核
+
+**复核对象**：提交 `55d32f6`，标签 `leather-mold-m1`  
+**复核日期**：2026-09-23  
+**结论**：**候选模具文件与修订链通过；M1 的“连续几何最小间隙”验收暂不通过。**
+
+现有三对候选 OBJ/STL 可以保留、查看和用于后续修复后的复验；但不能把当前
+`clearance_independent.min_mm` 当作连续模具表面已安全配合的证明，也不能据此把
+M1 标为“§7 全部满足”或进入实物试压。
+
+## 已通过的项目
+
+- Git 状态、提交和远端标签一致：`55d32f6`、`leather-mold-m1`；工作树无未提交修改。
+- `scripts/dev.sh run --frozen python -m pytest tests -m 'not real_model'`：
+  **207 passed, 2 deselected**。
+- `ruff check .`、`ruff format --check .`、
+  `mypy src/pet_leather_studio/domain src/pet_leather_studio/application --strict`：均通过。
+- 真实深度模型回归：
+  `scripts/dev.sh run --frozen python -m pytest tests/integration/test_real_model_depth.py -q`：
+  **2 passed**。
+- 三份本地候选修订均存在 `male.obj/.stl/.vtp`、`female.obj/.stl/.vtp`、
+  `mold_pair.npz`、`README.txt` 和装配预览；manifest 的 `kind=mold_pair`、
+  `parent_id`、四级上游 ID、`manufacturing_validated=false` 与
+  `visual_review=pending` 一致。
+- 三份候选都执行了模具侧扩边，源母版核心逐位保留，平坦止口分别为
+  4.019、4.012、4.282 mm；导出的 OBJ/STL 可重读且为水密正体积。这些结论和
+  [leather-mold-M1.md](leather-mold-M1.md) 的记录相符。
+
+## 阻断项：内置“独立距离”不是三角面距离
+
+**等级：P0（必须修复后才能宣布 M1 几何验收通过）。**
+
+`algorithms/leather_mold_pair.py` 中的 `_surface_samples()` 只取每个面片的顶点、
+三条边中点和面心；`bidirectional_min_distance()` 随后把两组这些采样点放入
+`scipy.spatial.cKDTree` 做**点到点**最近距离。它没有查询“一个点到另一张三角网格
+的最近三角面”，也没有连续曲面的误差上界。
+
+这与规划书 §3.2、§7 所写的“以高度场三角面为依据过采样或可审计 guard”及
+“三角网格独立最近距离”不一致。有限点集上的最小距离是连续表面最小距离的上界：
+两个面片的真实最近点若都落在采样点之间，当前代码可能报出较大的距离并错误放行。
+同一缺口也使 `guard=0` 的放行没有连续几何依据；球形包络本身是正确方向，问题在于
+顶点离散构造和验收器没有形成可证明的保守闭环。
+
+### 对现有三份候选的补充复核
+
+为判断这是否已影响当前文件，复核时没有使用项目内的 KD-tree 结果，而是将每个
+导出 VTP 顶面每个三角形作 4 等分重心采样（每方向 961,230–1,317,600 个点），再由
+PyVista/VTK 查询到**另一张三角面**的最近点。结果与交付报告数值相同：
+
+| 样本 | 双向加密三角面抽样最小距离 mm | 当前验收门 mm | 复核结果 |
+| --- | ---: | ---: | --- |
+| 短毛犬 `af6902eb` | 1.820675 | 1.747959 | 当前文件通过加密抽样 |
+| 猫 `d99cb085` | 1.819664 | 1.747959 | 当前文件通过加密抽样 |
+| 长毛犬 `aa4fa55c` | 1.832146 | 1.776471 | 当前文件通过加密抽样 |
+
+这降低了三份现有候选出现夹紧的风险，但它是一次性复核，不是仓库内可重复执行的
+连续几何验收，不能替代代码修复和回归测试。
+
+### 必须修改的实现
+
+1. 将 `bidirectional_min_distance()` 改为独立的**点到三角面**测距：可使用
+   PyVista/VTK cell locator 或 `trimesh.proximity.closest_point`。两个方向都必须测，
+   且不得调用 `spherical_envelope()` 或读取其公式场来回填距离。
+2. 对每个高度场三角形做确定性可配置细分（至少把现有顶点/边中点/面心替换为完整的
+   重心细分格）；在 manifest 记录 `distance_method`、每面细分数、总采样数、
+   双向值和误差/停止准则。
+3. 对球形包络的源高度场也采用同样的三角面细分来构造包络，或计算并记录一个由
+   单元对角线和最大坡度导出的保守 `discretization_guard_mm`。若独立测距失败，自动
+   提高细分/guard 后再生成，超出上限则拒绝发布。
+4. 新增回归测试：构造“真实最近点位于两个三角面内部、现有 5 类点样本均未命中”的
+   反例；旧点到点实现必须错误放行，新实现必须拒绝或加 guard 后通过。现有平面、凸脊、
+   单格尖峰测试继续保留，但不再把旧 KD-tree 当作独立验证器。
+5. 修复后重新生成三份 `mold_pair` 修订（不能覆盖既有修订），执行完整测试和真实三
+   样本复验，并把新 `distance_method` 与双向数值写入交付报告。
+
+## 非阻断观察
+
+1. 当前装配图把闭合的阳模和阴模以接近的实体颜色叠在一起。侧视可见缝隙，但等轴图中
+   阳模接触面大多被阴模遮住，不能据此人工检查凹腔细节。M1 的文件输出不受影响；M2
+   应提供分离距离、剖切或透明阴模，并分别显示 male/female 接触面和间隙层。
+2. 三份源母版均仍是 `visual_review=pending`，且每份有“源分辨率不足”警告。这是正确
+   继承，意味着修复 P0 后也只能进入候选/试样流程；母版视觉确认和低起伏试压仍是独立
+   前置条件。
+
+## 复验通过条件
+
+M1 可以改为“通过”的必要条件如下：
+
+- 新测距器在代码中对三角面工作，并且 manifest 可复算地说明其方法和采样密度；
+- 新增内部最近点反例测试通过，完整非 real-model 测试、ruff、format、strict mypy
+  通过；
+- 三份真实候选用修复后的管线重新生成，双向三角面测距都不小于
+  `t_effective - distance_tolerance_mm`；
+- 模具、母版继续保持 `manufacturing_validated=false`，直到用户完成视觉复核与实际试压。
+

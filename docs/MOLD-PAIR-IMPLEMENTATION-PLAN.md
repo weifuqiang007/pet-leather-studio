@@ -1,6 +1,6 @@
 # 皮革压制阴阳模生成规划书
 
-**状态**：M1 已交付（2026-09-23，标签 `leather-mold-m1`，交付报告 `docs/reports/leather-mold-M1.md`）；M2/M3 待实现。  
+**状态**：M1 代码与候选文件已交付（2026-09-23，标签 `leather-mold-m1`），但连续三角面最小间隙验收有 P0 缺口，尚不能标记为 M1 几何验收通过；详见 `docs/reports/leather-mold-M1-acceptance-review.md`。M2/M3 待实现。
 **前置输入**：已冻结并通过视觉复核的照片浮雕母版修订。  
 **目标**：从一份 `master` 母版生成可 3D 打印的阳模、阴模 OBJ/STL 文件，并保存可复算的配合间隙、皮革参数、版本关系和几何验收结果。
 
@@ -278,11 +278,14 @@ python -m pet_leather_studio --project <project> generate-leather-molds \
 
 本节为 M1 执行结果回写；上文各节仍是计划文本，冲突时以本节、交付报告与代码为准。
 
-- **交付范围**：§6 M1 全部 8 项——`domain/leather_molds.py`、`algorithms/leather_mold_pair.py`、
+- **交付范围**：§6 M1 的文件输出、修订链、CLI、GUI 和常规回归均已实现——`domain/leather_molds.py`、`algorithms/leather_mold_pair.py`、
   `application/leather_mold_workbench.py`（含 `LeatherMoldGeometryPort`）、
   `infrastructure/leather_mold_geometry.py`（原生 `heightfield.npz` 路径，不重采样）、
   `bootstrap/workbench.py` 组装、同库 `kind="mold_pair"` 修订（parent=master）、CLI
-  `generate-leather-molds`、GUI 模具面板与装配预览。§7 M1 代码与几何验收全部满足。
+  `generate-leather-molds`、GUI 模具面板与装配预览。**更正**：2026-09-23 独立复核发现
+  内置 `bidirectional_min_distance()` 使用点集 KD-tree 而非点到三角面距离，故 §7 的连续
+  三角面最小间隙门尚未满足；修复要求和复验门见
+  `docs/reports/leather-mold-M1-acceptance-review.md`。在此之前，产物仅为候选模具。
 - **验证**：`pytest tests -m 'not real_model'` 207 passed / 2 deselected（新增 34 项：
   单元 13、集成 15、GUI 3）；ruff / format / mypy（domain+application strict）通过。
 - **真机几何验收**（三张 R3 母版，t_eff 1.850 mm，默认参数）：三对模具
