@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -83,6 +85,15 @@ VIEW_DEPTH = "深度图"
 VIEW_3D = "三维中性预览"
 PREVIEW_WIDTH_MM = 80.0
 
+_JOB_LABELS = {
+    "import-photo": "导入照片",
+    "save-mask": "保存蒙版",
+    "estimate-depth": "深度推理",
+    "build-master": "生成浮雕母版",
+    "generate-leather-molds": "生成皮革阴阳模",
+    "calibrate-reference": "保存参考标定",
+}
+
 _COLORMAP_ANCHORS = np.array(
     [
         [30, 20, 70],
@@ -102,6 +113,10 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.service, self.project = service, project
         self.process = None
         self.kill_timer = None
+        self._job_timer: QTimer | None = None
+        self._job_command: str | None = None
+        self._job_started_at: float | None = None
+        self._completion_notice: QMessageBox | None = None
         self.close_after_job = False
         self._pending_adjustments: list[LocalAdjustment] = []
         self._pending_masks: list[tuple[np.ndarray, float, float]] = []
@@ -536,12 +551,34 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.viewer.add_mesh(mesh, color="ivory", smooth_shading=True)
 
     def _add_mold_mesh(self, data: dict[str, Any]) -> None:
-        """M1 装配预览：阳模接触面象牙色 + 阴模内表面半透明（闭模位，间隙即皮厚层）。"""
+        """闭模几何预览：阳模、理论皮革中面与阴模内表面同一坐标系显示。"""
+
         directory = self.service.store.directory(data["id"])
         male = pv.read(directory / "male.vtp")
         female = pv.read(directory / "female.vtp")
         self.viewer.add_mesh(male, color="ivory", smooth_shading=True)
-        self.viewer.add_mesh(female, color="steelblue", opacity=0.35, smooth_shading=True)
+        with np.load(directory / "mold_pair.npz") as pair:
+            male_contact = np.asarray(pair["male_contact_mm"], dtype=np.float64)
+            female_inner = np.asarray(pair["female_inner_mm"], dtype=np.float64)
+            width_mm = float(pair["width_mm"])
+            height_mm = float(pair["height_mm"])
+        ny, nx = male_contact.shape
+        xx, yy = np.meshgrid(np.linspace(0.0, width_mm, nx), np.linspace(0.0, height_mm, ny))
+        leather_middle = pv.StructuredGrid(xx, yy, (male_contact + female_inner) / 2.0)
+        self.viewer.add_mesh(
+            leather_middle,
+            color="#a66b37",
+            opacity=0.9,
+            smooth_shading=True,
+            label="皮革理论中面",
+        )
+        self.viewer.add_mesh(
+            female,
+            color="steelblue",
+            opacity=0.35,
+            smooth_shading=True,
+            label="阴模内表面",
+        )
 
     def _preview_parameters(self) -> ReliefParameters:
         # StrEnum 经 QVariant 往返可能退化为 str，须用等值比较而非 is
@@ -830,6 +867,8 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"重读校验：水密；表面最大误差 "
             f"{data.get('geometry_checks', {}).get('surface_max_error_mm')} mm（门 1e-4）",
             "文件：male/female .obj/.stl/.vtp、mold_pair.npz、assembly_preview.vtp、README.txt",
+            "三维预览：象牙色=阳模接触面；棕色=压合后皮革的理论中面；半透明蓝色=阴模内表面。"
+            "棕色面是几何间隙示意，不是皮革拉伸、回弹或皱褶仿真。",
         ]
         if data.get("master_visual_review") != "approved":
             lines.append("⚠ 源母版 visual_review 未approved：几何验收不替代视觉复核")
@@ -1132,8 +1171,11 @@ class PhotoWorkbenchWindow(QMainWindow):
     def start_job(self, arguments):
         if self.process is not None:
             return
+        command = arguments[0] if arguments else "unknown"
         process = QProcess(self)
         self.process = process
+        self._job_command = command
+        self._job_started_at = time.monotonic()
         process.setProgram(sys.executable)
         process.setArguments(
             ["-m", "pet_leather_studio", "--project", str(self.project), *arguments]
@@ -1143,8 +1185,79 @@ class PhotoWorkbenchWindow(QMainWindow):
         for widget in self._job_widgets:
             widget.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.status.setText("计算中（独立进程）；失败不产生新版本，可取消…")
+        self._job_timer = QTimer(self)
+        self._job_timer.setInterval(1000)
+        self._job_timer.timeout.connect(self._update_job_status)
+        self._job_timer.start()
+        self._update_job_status()
         process.start()
+
+    def _update_job_status(self) -> None:
+        """每秒更新运行状态；深度模型无稳定进度百分比，不能伪造百分比。"""
+
+        if self.process is None:
+            return
+        elapsed = 0
+        if self._job_started_at is not None:
+            elapsed = max(0, int(time.monotonic() - self._job_started_at))
+        label = _JOB_LABELS.get(self._job_command or "", self._job_command or "任务")
+        self.status.setText(
+            f"正在{label} · 已运行 {elapsed} 秒；请保持窗口打开。完成后会弹出提示并切换到结果预览。"
+        )
+
+    @staticmethod
+    def _revision_id_from_output(stdout: str) -> str | None:
+        """从 CLI 的成功 JSON 中取新修订；日志干扰时安全回退到当前激活版本。"""
+
+        try:
+            output = json.loads(stdout)
+        except json.JSONDecodeError:
+            return None
+        revision_id = output.get("revision_id") if isinstance(output, dict) else None
+        return str(revision_id) if revision_id else None
+
+    def _show_completed_result(self, command: str, revision_id: str | None) -> str:
+        """选中新修订并跳到最有用的视图，返回完成弹窗的用户说明。"""
+
+        if revision_id:
+            index = self.versions.findData(revision_id)
+            if index >= 0:
+                self.versions.setCurrentIndex(index)
+
+        if command == "estimate-depth":
+            self.view.setCurrentText(VIEW_DEPTH)
+            return "已生成深度图并切换到“深度图”视图。可再切换到“三维中性预览”检查浮雕起伏。"
+        if command == "build-master":
+            self.view.setCurrentText(VIEW_3D)
+            return "已生成浮雕母版并切换到三维预览。拖动右侧三维视图可查看正面、侧面和斜视。"
+        if command == "generate-leather-molds":
+            self.view.setCurrentText(VIEW_3D)
+            return (
+                "已生成阴模和阳模，并切换到三维装配预览。象牙色为阳模、棕色为皮革理论中面、"
+                "半透明蓝色为阴模；OBJ/STL 在“打开选中版本文件夹”中。"
+            )
+        if command == "save-mask":
+            self.view.setCurrentText(VIEW_MASK)
+            return "蒙版已保存并切换到“蒙版”视图。"
+        if command == "import-photo":
+            self.view.setCurrentText(VIEW_PHOTO)
+            return "照片已导入并切换到“原图”视图。"
+        return "任务已完成；请在历史版本中选择新结果查看。"
+
+    def _show_completion_notice(self, title: str, text: str) -> None:
+        """展示非阻塞完成通知，不能让用户或下一个任务被模态对话框卡住。"""
+
+        if self._completion_notice is not None:
+            self._completion_notice.close()
+            self._completion_notice.deleteLater()
+        notice = QMessageBox(self)
+        notice.setIcon(QMessageBox.Icon.Information)
+        notice.setWindowTitle(title)
+        notice.setText(text)
+        notice.setStandardButtons(QMessageBox.StandardButton.Ok)
+        notice.setModal(False)
+        notice.show()
+        self._completion_notice = notice
 
     def process_error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
@@ -1183,6 +1296,18 @@ class PhotoWorkbenchWindow(QMainWindow):
             self.kill_timer.stop()
             self.kill_timer.deleteLater()
             self.kill_timer = None
+        if self._job_timer is not None:
+            self._job_timer.stop()
+            self._job_timer.deleteLater()
+            self._job_timer = None
+        command = self._job_command or "unknown"
+        label = _JOB_LABELS.get(command, command)
+        elapsed = 0
+        if self._job_started_at is not None:
+            elapsed = max(0, int(time.monotonic() - self._job_started_at))
+        self._job_command = None
+        self._job_started_at = None
+        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
         errors = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
         self.process = None
         process.deleteLater()
@@ -1190,7 +1315,9 @@ class PhotoWorkbenchWindow(QMainWindow):
             widget.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.status.setText(
-            "完成，新版本已保存" if code == 0 else "任务结束异常/已取消；旧版本保持不变"
+            f"{label}完成，用时 {elapsed} 秒；新版本已保存"
+            if code == 0
+            else f"{label}未完成（异常或已取消）；旧版本保持不变"
         )
         if code == 0 and self._job_clears_adjustments:
             # 局部调整已随母版修订持久化（adjustment-*.png + region_sha256）
@@ -1199,8 +1326,17 @@ class PhotoWorkbenchWindow(QMainWindow):
             self._job_clears_adjustments = False
             self._refresh_adjust_status()
         self.refresh()
-        if code != 0 and errors:
-            self.details.append(errors[-3000:])
+        if code == 0:
+            revision_id = self._revision_id_from_output(stdout)
+            complete_text = self._show_completed_result(command, revision_id)
+            if not self.close_after_job:
+                self._show_completion_notice(
+                    f"{label}完成",
+                    f"{complete_text}\n\n用时：{elapsed} 秒。",
+                )
+        else:
+            detail = errors[-3000:] if errors else "未收到错误详情。"
+            self.details.append(detail)
         if self.close_after_job:
             QTimer.singleShot(0, self.close)
 

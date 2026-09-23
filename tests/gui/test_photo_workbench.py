@@ -3,6 +3,8 @@
 需要真实 Qt/VTK 会话（仅真机运行，CI 不执行 tests/gui）。
 """
 
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -499,7 +501,7 @@ def test_generate_leather_molds_argument_assembly(qtbot, tmp_path: Path, monkeyp
 
 
 def test_mold_pair_view_dispatch(qtbot, tmp_path: Path) -> None:
-    """M1：mold_pair 修订三维装配预览（阳模 + 半透明阴模）与详情；上游视图可达。"""
+    """M1：三维装配预览同时绘制阳模、皮革理论中面和半透明阴模。"""
     from pet_leather_studio.application.leather_mold_workbench import (  # noqa: E402
         LeatherMoldWorkbench,
     )
@@ -521,16 +523,65 @@ def test_mold_pair_view_dispatch(qtbot, tmp_path: Path) -> None:
     qtbot.waitUntil(lambda: window.viewer.renderer is not None)
     window.versions.setCurrentIndex(window.versions.findData(pair.revision_id))
     window.view.setCurrentText(VIEW_3D)
-    assert len(window.viewer.renderer.actors) > 0  # male.vtp + female.vtp 装配
+    assert len(window.viewer.renderer.actors) >= 3  # 阳模 + 皮革中面 + 阴模
     text = window.details.toPlainText()
     assert "皮革阴阳模" in text and "leather-mold-pair-v1" in text
     assert "独立实测最小" in text and "重读校验" in text
     assert "visual_review 未approved" in text  # pending 继承须界面明示
     assert "外治具" in text or "external_jig" in text  # 定位说明随警告展示
+    assert "棕色=压合后皮革的理论中面" in text
 
     window.view.setCurrentText(VIEW_PHOTO)  # 上游照片视图可达，详情仍为模具信息
     assert len(window.viewer.renderer.actors) > 0
     assert "皮革阴阳模" in window.details.toPlainText()
+    window.close()
+
+
+def test_job_finished_announces_result_and_passes_new_revision_id(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """长任务成功后必须弹出完成提示，并将 CLI 的新修订交给结果聚焦逻辑。"""
+
+    _store, service, depth_id = _build_chain(tmp_path)
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+
+    class CompletedProcess:
+        @staticmethod
+        def readAllStandardOutput() -> bytes:
+            return json.dumps({"revision_id": depth_id}).encode()
+
+        @staticmethod
+        def readAllStandardError() -> bytes:
+            return b""
+
+        @staticmethod
+        def deleteLater() -> None:
+            return None
+
+    focused: list[tuple[str, str | None]] = []
+    notices: list[tuple[str, str]] = []
+    window.process = CompletedProcess()
+    window._job_command = "estimate-depth"
+    window._job_started_at = time.monotonic() - 1.0
+    monkeypatch.setattr(window, "refresh", lambda: None)
+    monkeypatch.setattr(
+        window,
+        "_show_completed_result",
+        lambda command, revision_id: focused.append((command, revision_id)) or "已切换结果",
+    )
+    monkeypatch.setattr(
+        window,
+        "_show_completion_notice",
+        lambda title, text: notices.append((title, text)),
+    )
+
+    window.job_finished(0, None)
+
+    assert focused == [("estimate-depth", depth_id)]
+    assert notices and notices[0][0] == "深度推理完成"
+    assert "已切换结果" in notices[0][1]
+    assert "深度推理完成" in window.status.text()
     window.close()
 
 
