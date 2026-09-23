@@ -101,6 +101,12 @@ class MaskCanvas(QWidget):
         self._fit()
         self.update()
 
+    def pan_by(self, delta_x: float, delta_y: float) -> None:
+        """平移图像本身；画布控件的位置和大小保持不变。"""
+
+        self._offset = (self._offset[0] + delta_x, self._offset[1] + delta_y)
+        self.update()
+
     def _build_overlay(self) -> QImage:
         mask = self.buffer.mask
         height, width = mask.shape
@@ -200,13 +206,15 @@ class MaskEditorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("人工蒙版编辑（画笔添加/擦除 · 撤销/重做 · 滚轮缩放）")
         self.resize(860, 640)
-        base = np.asarray(Image.open(work_png).convert("RGB"))
-        self._base = base
         mask0 = (
             np.array(initial_mask, dtype=np.uint8)
             if initial_mask is not None
-            else np.zeros(base.shape[:2], dtype=np.uint8)
+            else np.zeros(np.asarray(Image.open(work_png)).shape[:2], dtype=np.uint8)
         )
+        base = np.asarray(Image.open(work_png).convert("RGB"))
+        if initial_from_alpha:
+            base = self._with_checkerboard_background(base, mask0)
+        self._base = base
         self.canvas = MaskCanvas(base, mask0, None)
         self.init_threshold_level: int | None = None
         self.initial_from_alpha = initial_from_alpha
@@ -233,6 +241,13 @@ class MaskEditorDialog(QDialog):
         controls.addWidget(self.add_mode)
         controls.addWidget(self.erase_mode)
         controls.addWidget(self.pan_mode)
+
+        navigation = QFormLayout()
+        navigation.addRow(
+            "移动图片",
+            self._navigation_buttons(),
+        )
+        controls.addLayout(navigation)
 
         for label, handler in (
             ("撤销", self._undo),
@@ -267,6 +282,30 @@ class MaskEditorDialog(QDialog):
         self._sync_brush()
         self._refresh_status()
 
+    def _navigation_buttons(self) -> QWidget:
+        """为触控板用户提供确定的平移入口，方向表示图片移动方向。"""
+
+        widget = QWidget()
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        for label, dx, dy in (("←", -80, 0), ("→", 80, 0), ("↑", 0, -80), ("↓", 0, 80)):
+            button = QPushButton(label)
+            button.setFixedWidth(28)
+            button.clicked.connect(lambda _checked=False, x=dx, y=dy: self.canvas.pan_by(x, y))
+            row.addWidget(button)
+        return widget
+
+    @staticmethod
+    def _with_checkerboard_background(base: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        """Alpha 初稿在编辑器显示为棋盘格，避免透明背景白底吞没水印边缘。"""
+
+        height, width = alpha.shape
+        yy, xx = np.indices((height, width))
+        checker = np.where(((xx // 24) + (yy // 24)) % 2 == 0, 218, 176).astype(np.uint8)
+        result = np.array(base, dtype=np.uint8, copy=True)
+        result[alpha <= 127] = checker[alpha <= 127, None]
+        return result
+
     def _sync_brush(self) -> None:
         self.canvas.brush_radius = self.radius.value()
         self.canvas.brush_value = MASK_OFF if self.erase_mode.isChecked() else MASK_ON
@@ -281,7 +320,8 @@ class MaskEditorDialog(QDialog):
                 if self.initial_from_alpha
                 else "阈值初稿仅为辅助（浅背景假设），人工修正后按 manual 记录"
             )
-            + "；拖动画面模式可左键拖拽，也可随时按住中键拖拽；“适应窗口”可恢复全图"
+            + "；拖动画面模式可左键拖拽，也可随时按住中键拖拽"
+            + "；箭头按钮可移动图片；“适应窗口”可恢复全图"
         )
 
     def _undo(self) -> None:

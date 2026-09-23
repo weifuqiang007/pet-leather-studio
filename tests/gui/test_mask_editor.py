@@ -67,6 +67,7 @@ def test_embedded_alpha_initial_mask_records_its_provenance(qtbot, work_png: Pat
     dialog = _shown(qtbot, MaskEditorDialog(work_png, initial, initial_from_alpha=True))
     assert dialog.mask_method == MaskMethod.EMBEDDED_ALPHA
     assert "透明通道" in dialog.status.text()
+    assert tuple(dialog._base[0, 0]) == (218, 218, 218)  # 透明背景显示为棋盘格而非白色
 
 
 def test_zoomed_click_lands_within_one_pixel(qtbot, work_png: Path) -> None:

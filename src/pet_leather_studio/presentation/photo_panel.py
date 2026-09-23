@@ -64,6 +64,7 @@ from pet_leather_studio.domain.photo_relief import (
     DepthSemantics,
     HeightMode,
     LocalAdjustment,
+    MaskMethod,
     ReliefParameters,
     slope_exceedances,
     suggested_falloff_band_mm,
@@ -864,6 +865,7 @@ class PhotoWorkbenchWindow(QMainWindow):
         if latest is not None:
             with Image.open(self.service.store.directory(latest["id"]) / "mask.png") as image:
                 initial = np.asarray(image, dtype=np.uint8)
+            initial_from_alpha = latest.get("mask_method") == MaskMethod.EMBEDDED_ALPHA.value
         else:
             alpha_mask = self.service.store.directory(photo_id) / "alpha_mask.png"
             if alpha_mask.is_file():
