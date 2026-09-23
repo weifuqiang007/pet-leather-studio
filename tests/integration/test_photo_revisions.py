@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from photo_stubs import StubInference, StubRegistry, make_mask_png, make_photo_png
+from PIL import Image
 
 from pet_leather_studio.application.mold_workbench import MoldWorkbench
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench
@@ -69,6 +70,31 @@ def test_photo_chain_traceability_and_verify(tmp_path: Path) -> None:
     for revision_id in (photo_id, mask_id, depth_id):
         store.verify(revision_id)  # 链上全部可校验
     assert store.get()["id"] == depth_id  # 发布后 active 前移
+
+
+def test_transparent_png_import_creates_embedded_alpha_mask(tmp_path: Path) -> None:
+    """透明抠图不是黑底照片：导入后必须直接产生可编辑的 Alpha 蒙版修订。"""
+
+    rgba = np.zeros((24, 32, 4), dtype=np.uint8)
+    rgba[4:20, 8:24, :3] = (90, 100, 110)
+    rgba[4:20, 8:24, 3] = 255
+    source = tmp_path / "cutout.png"
+    Image.fromarray(rgba, mode="RGBA").save(source)
+    store, service = build_photo_service(tmp_path / "proj")
+
+    photo = service.import_photo(source)
+    photo_manifest = store.get(photo.revision_id)
+    mask_manifest = store.get()  # Alpha 蒙版成为 active，用户可立即进入深度推理
+
+    assert photo_manifest["kind"] == "photo"
+    assert photo_manifest["alpha_mask_available"] is True
+    assert {"original.png", "work.png", "alpha_mask.png"} == set(photo_manifest["files"])
+    assert mask_manifest["kind"] == "mask"
+    assert mask_manifest["photo_id"] == photo.revision_id
+    assert mask_manifest["mask_method"] == MaskMethod.EMBEDDED_ALPHA.value
+    assert "透明通道" in mask_manifest["notes"]
+    with Image.open(store.directory(mask_manifest["id"]) / "mask.png") as mask:
+        assert mask.mode == "L" and mask.getpixel((0, 0)) == 0 and mask.getpixel((10, 10)) == 255
 
 
 def test_save_mask_rejects_non_photo_parent(tmp_path: Path) -> None:

@@ -50,11 +50,19 @@ class PhotoWorkbench:
         self.profiles = profiles
 
     def import_photo(self, source: Path) -> RevisionSummary:
+        """导入照片；带有效 Alpha 的 PNG 同时追加可编辑的 embedded_alpha 蒙版。"""
         stage = self.store.begin()
         try:
             metadata = self.photo_io.prepare_import(source, stage)
             metadata.update(kind="photo", parent_id=None, visual_review="pending")
             published = self.store.publish(stage, metadata)
+            if published.get("alpha_mask_available"):
+                self.save_mask(
+                    str(published["id"]),
+                    self.store.directory(str(published["id"])) / "alpha_mask.png",
+                    MaskMethod.EMBEDDED_ALPHA,
+                    notes="从原图 PNG 透明通道生成；保存前请检查耳尖、胡须、水印和边缘",
+                )
             return RevisionSummary.from_metadata(published)
         except BaseException:
             self.store.discard(stage)

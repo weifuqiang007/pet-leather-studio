@@ -40,6 +40,9 @@ class PhotoIO:
                 rgba = oriented.convert("RGBA")
                 alpha = rgba.getchannel("A")
                 has_transparent_background = alpha.getextrema()[0] < 255
+                alpha_array = np.asarray(alpha, dtype=np.uint8)
+                alpha_coverage = float((alpha_array > MASK_BINARY_THRESHOLD).mean())
+                has_usable_alpha_mask = has_transparent_background and alpha_coverage > 0.0
                 if has_transparent_background:
                     # 推理输入要求 RGB，但不能把透明背景的未定义 RGB（常为纯黑）
                     # 当作真实场景。以浅灰底预合成，同时原样保存 Alpha 作为可编辑初稿。
@@ -58,10 +61,7 @@ class PhotoIO:
                 f"输入分辨率 {width_px}×{height_px}px 低于建议 {RECOMMENDED_LONG_EDGE_PX}px；"
                 "放大不会增加原始细节，精细验收需更高清原图"
             )
-        alpha_coverage: float | None = None
-        if has_transparent_background:
-            alpha_array = np.asarray(alpha, dtype=np.uint8)
-            alpha_coverage = float((alpha_array > MASK_BINARY_THRESHOLD).mean())
+        if has_usable_alpha_mask:
             warnings.append(
                 "检测到原图透明通道：已保留 alpha_mask.png 作为蒙版编辑初稿；"
                 "请检查耳尖、胡须和边缘后保存蒙版"
@@ -78,8 +78,8 @@ class PhotoIO:
             "work_height_px": work.height,
             "exif_orientation": orientation,
             "coordinate_transform": "exif_transpose" if orientation != 1 else "none",
-            "alpha_mask_available": has_transparent_background,
-            "alpha_mask_coverage": alpha_coverage,
+            "alpha_mask_available": has_usable_alpha_mask,
+            "alpha_mask_coverage": alpha_coverage if has_usable_alpha_mask else None,
             "warnings": warnings,
         }
 
