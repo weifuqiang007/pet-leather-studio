@@ -81,6 +81,23 @@ def test_generate_full_file_set_and_independent_clearance(tmp_path: Path) -> Non
     check = metadata["clearance_independent"]
     assert check["min_mm"] >= t_eff - tolerance  # 独立测距验收（§7）
     assert check["guard_mm"] in {step * tolerance for step in GUARD_STEPS}
+    # M1-R1：验收器是精确点到三角面（重心细分采样 + 半径证书），可复算
+    assert "point-to-triangle" in check["method"]
+    assert check["certified"] is True
+    assert check["subdivision_order"] >= 2
+    assert (
+        check["points_per_face"]
+        == (check["subdivision_order"] + 1) * (check["subdivision_order"] + 2) // 2
+    )
+    # 采样数按扩边后网格算：全有效 16×49 ramp → 扩边 grid 30×63 → 面 2×29×62
+    grid_ny, grid_nx = metadata["plate"]["grid"]
+    face_count = 2 * (grid_ny - 1) * (grid_nx - 1)
+    assert check["samples_a"] == check["points_per_face"] * face_count
+    assert check["samples_b"] == check["samples_a"]
+    assert check["conservative_min_mm"] == pytest.approx(
+        check["min_mm"] - check["sampling_bound_mm"]
+    )
+    assert metadata["envelope_kernel"]["subdivision_order"] == check["subdivision_order"]
     assert metadata["envelope_kernel"]["radius_mm"] >= t_eff
     assert metadata["geometry_checks"]["watertight"] is True
     assert metadata["geometry_checks"]["surface_max_error_mm"] <= GEOM_TOL_MM
@@ -92,6 +109,11 @@ def test_generate_full_file_set_and_independent_clearance(tmp_path: Path) -> Non
 
     with np.load(stage / "mold_pair.npz") as pair:
         assert pair["independent_min_distance_mm"] == pytest.approx(check["min_mm"])
+        assert pair["independent_a_to_b_mm"] == pytest.approx(check["a_to_b_mm"])
+        assert pair["independent_b_to_a_mm"] == pytest.approx(check["b_to_a_mm"])
+        assert pair["independent_sampling_bound_mm"] == pytest.approx(check["sampling_bound_mm"])
+        assert int(pair["subdivision_order"]) == check["subdivision_order"]
+        assert "point-to-triangle" in str(pair["distance_method"])
         assert pair["male_contact_mm"].shape == tuple(metadata["plate"]["grid"])
         assert np.all(pair["normal_clearance_mm"] <= pair["axial_gap_mm"] + 1e-12)
         assert bool(pair["flat_stop"][0, 0])  # 扩边后版缘是纯平止口

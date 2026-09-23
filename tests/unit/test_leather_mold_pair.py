@@ -1,16 +1,21 @@
 """MOLD-PAIR M1 单元：参数合同、单侧坡度、球形包络（凸脊 pinch 回归）、平铺扩边。
 
 包络验收不信任公式自证：一律把两面三角化后走 bidirectional_min_distance
-独立测距；45° 凸脊同时验证朴素 Z 偏置确实欠清（t·cos45 < t），防止回归成
-平面近似。扩边核心逐位不变（×1.0 精确）以 np.array_equal 断言。
+（M1-R1：重心细分采样 + 精确点到三角面距离 + 半径证书）独立测距；45° 凸脊
+同时验证朴素 Z 偏置确实欠清（t·cos45 < t），防止回归成平面近似。另有
+"真实最近点在三角面内部、旧 5 点采样全错过"的反例回归（旧点到点 KD-tree
+实现必须错误放行）。扩边核心逐位不变（×1.0 精确）以 np.array_equal 断言。
 """
 
 import math
 
 import numpy as np
 import pytest
+import trimesh
+from scipy.spatial import cKDTree
 
 from pet_leather_studio.algorithms.leather_mold_pair import (
+    SUBDIVISION_ORDER,
     bidirectional_min_distance,
     distance_tolerance_mm,
     expand_heightfield,
@@ -124,8 +129,9 @@ def test_envelope_dome_meets_clearance() -> None:
 def test_envelope_single_spike_needs_guard() -> None:
     """单格尖峰（近垂直壁）：包络处处有限；验收靠 guard 加密兜底（§3.2）。
 
-    上包络只能表达单值 z，近垂直壁的侧向偏置不可表示——无 guard 时独立
-    距离会低于 R−容差，加大 guard（生产 GUARD_STEPS 最大 2×容差）后达标。
+    上包络只能表达单值 z，近垂直壁的侧向偏置不可表示——无 guard 时精确
+    点到三角面距离仍低于 R−容差；guard 加密（生产 GUARD_STEPS 1×/2×容差）
+    后达标。细分球心 + 精确测距后 1×容差档即够（旧点到点口径需 2×）。
     """
 
     spike = np.zeros((21, 21))
@@ -135,20 +141,75 @@ def test_envelope_single_spike_needs_guard() -> None:
     plain, _report = spherical_envelope(spike, DX, DY, 1.0)
     assert np.isfinite(plain).all()
     plain_check = bidirectional_min_distance(male, grid_surface_trimesh(plain, 10.0, 10.0))
-    guarded, _report = spherical_envelope(spike, DX, DY, 1.0 + 2 * TOL)
-    guarded_check = bidirectional_min_distance(male, grid_surface_trimesh(guarded, 10.0, 10.0))
+    guard1, _report = spherical_envelope(spike, DX, DY, 1.0 + TOL)
+    guard1_check = bidirectional_min_distance(male, grid_surface_trimesh(guard1, 10.0, 10.0))
+    guard2, _report = spherical_envelope(spike, DX, DY, 1.0 + 2 * TOL)
+    guard2_check = bidirectional_min_distance(male, grid_surface_trimesh(guard2, 10.0, 10.0))
     assert plain_check["min_mm"] < 1.0 - TOL  # 尖峰侧壁：包络单独不够（如实记录）
-    assert guarded_check["min_mm"] >= 1.0 - TOL  # guard 兜底后达到验收门
-    assert guarded_check["min_mm"] > plain_check["min_mm"]
+    assert guard1_check["min_mm"] >= 1.0 - TOL  # guard 兜底后达到验收门
+    assert guard2_check["min_mm"] >= 1.0 - TOL
+    assert guard1_check["min_mm"] > plain_check["min_mm"]
+
+
+def _legacy_point_samples(mesh: trimesh.Trimesh) -> np.ndarray:
+    """M1 初版采样器（仅回归对照用）：顶点 + 三边中点 + 面心。"""
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    corners = vertices[np.asarray(mesh.faces, dtype=np.int64)]
+    return np.vstack(
+        [
+            vertices,
+            0.5 * (corners[:, 0] + corners[:, 1]),
+            0.5 * (corners[:, 1] + corners[:, 2]),
+            0.5 * (corners[:, 2] + corners[:, 0]),
+            corners.mean(axis=1),
+        ]
+    )
+
+
+def test_point_to_triangle_interior_nearest_counterexample() -> None:
+    """反例（M1-R1 P0）：真实最近点在 A 面内部，新旧验收器结论相反。
+
+    B 的低顶点悬在 A 大三角面内部上方 0.12 mm 处；A/B 的顶点、边中点、
+    面心全部远离该接触位置。旧点到点 KD-tree 报 0.731 mm（按 0.5 mm 门限
+    会错误放行）；点到三角面报 0.120 mm（真实值，拒绝/加 guard）。
+    """
+
+    ground = trimesh.Trimesh(
+        [[0.0, 0.0, 0.0], [12.0, 0.0, 0.0], [0.0, 12.0, 0.0]], [[0, 1, 2]], process=False
+    )
+    hovering = trimesh.Trimesh(
+        [[0.6, 0.4, 0.12], [9.0, 9.0, 6.0], [-9.0, 7.0, 6.0]], [[0, 1, 2]], process=False
+    )
+    legacy = float(
+        cKDTree(_legacy_point_samples(hovering)).query(_legacy_point_samples(ground))[0].min()
+    )
+    check = bidirectional_min_distance(ground, hovering)
+    assert legacy > 0.7  # 旧实现：所有采样点对面间距 ≥ 0.731 mm
+    assert check["min_mm"] == pytest.approx(0.12, abs=1e-9)  # 新实现：精确 0.12
+    assert check["b_to_a_mm"] == pytest.approx(0.12, abs=1e-9)  # 最近点对在 A 面内部
+    assert check["a_to_b_mm"] > 0.5
+    assert check["certified"] is True
+    assert "point-to-triangle" in check["method"]
+    # 旧实现按 0.5 mm 门限会放行，新实现必须拒绝——这正是 P0 缺口
+    assert legacy >= 0.5 > check["min_mm"]
 
 
 def test_bidirectional_parallel_planes_and_sample_count() -> None:
     ground = grid_surface_trimesh(np.zeros((5, 5)), 4.0, 4.0)
     lifted = grid_surface_trimesh(np.full((5, 5), 1.0), 4.0, 4.0)
     check = bidirectional_min_distance(ground, lifted)
-    assert check["min_mm"] == pytest.approx(1.0, abs=1e-9)
-    # 采样 = 顶点 V + 逐面 3 边中点 + 面心（V + 4F）
-    assert check["samples_a"] == 25 + 4 * 32
+    # 平行平面：样点到对面三角面的垂直投影精确命中面内部 → 距离恰为 1.0
+    assert check["min_mm"] == pytest.approx(1.0, abs=1e-12)
+    assert check["a_to_b_mm"] == pytest.approx(1.0, abs=1e-12)
+    assert check["b_to_a_mm"] == pytest.approx(1.0, abs=1e-12)
+    # 采样 = 面数 × 重心细分格点数（不去重；5×5 网格 → 32 面 × 15 点）
+    assert check["subdivision_order"] == SUBDIVISION_ORDER
+    assert check["points_per_face"] == (SUBDIVISION_ORDER + 1) * (SUBDIVISION_ORDER + 2) // 2
+    assert check["samples_a"] == 32 * check["points_per_face"]
+    assert check["certified"] is True
+    assert check["sampling_bound_mm"] > 0.0  # 采样误差界随报告可审计
+    assert check["conservative_min_mm"] < check["min_mm"]
 
 
 def _ramp_grid() -> np.ndarray:

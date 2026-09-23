@@ -2,13 +2,16 @@
 
 关键口径：
 - 阴模内表面 = 阳模接触面的**球形偏置上包络**（离散 Minkowski 膨胀）：
-  每个采样点上方放半径 t_effective(+guard) 的球取上半最大值。凸脊被圆化，
-  处处欧氏距离 ≥ 目标——不是局部 t/n_z 的平面近似（规划书 §3.2）。
+  球心取自三角面**重心细分格**（不只网格顶点），每球心对半径内节点取
+  z + √(R²−d²) 的最大值。凸脊被圆化，处处欧氏距离 ≥ 目标——不是局部
+  t/n_z 的平面近似（规划书 §3.2）。
 - 梯度一律**单侧最大差分**（与 P2 slope_report 同口径），断崖不折半（§3.3）。
 - 平坦止口 = 版边余量 − 源母版过渡带宽；不足时**模具侧平铺扩边**，
   原核心像素逐位不变（×1.0 精确），新增区域平滑落地到 0 后接纯平止口（§3.4）。
-- 独立验收：把两接触面三角化后双向采样（顶点+三边中点+面心），
-  KD-tree 最近点距离；不得用包络公式回填自证（§3.2 验收）。
+- 独立验收（M1-R1）：两面各自重心细分采样后，对每个采样点计算到**另一张
+  三角网格的精确点到三角面距离**（Ericson 最近点 + 质心 KD-tree 候选 +
+  半径证书兜底），双向都测；不再用采样点之间的点到点 KD-tree 冒充连续
+  距离，也不得用包络公式回填自证（§3.2 验收）。
 """
 
 from __future__ import annotations
@@ -26,7 +29,14 @@ DISTANCE_TOLERANCE_SPACING_RATIO = 0.25  # 容差 = max(下限, 0.25×max(dx,dy)
 EXPANSION_TRANSITION_MIN_MM = 1.0  # 扩边落地过渡最小宽度（工程值）
 EXPANSION_TRANSITION_SLOPE = 1.5  # smoothstep 峰值斜率（与 P2 裙边公式同源）
 EXPANSION_TRANSITION_CAP_MM = 12.0  # 过渡宽度上限（防贴边大高度把版面撑爆）
-FLAT_EPS_MM = 1e-9  # 判定"纯平"的高度容差（构造上背景恒 0）
+SUBDIVISION_ORDER = 4  # 重心细分阶数：包络球心与验收采样同一口径（每面 15 点）
+DISTANCE_METHOD = (
+    "barycentric-subdivision sampling + exact point-to-triangle distance "
+    "(centroid KD-tree candidates + radius certificate)"
+)
+_DISTANCE_CANDIDATES = 96  # 质心 KD-tree 候选数 k（半径证书：第 k 近质心 − 外接半径）
+_DISTANCE_EXACT_SLOTS = 8  # 先只对最近 8 个候选精确算距（证书不满足再球查询兜底）
+_DISTANCE_CHUNK = 32768  # 点-三角精确距离的分块点数（控内存）
 
 
 def distance_tolerance_mm(dx_mm: float, dy_mm: float) -> float:
@@ -151,44 +161,93 @@ def expand_heightfield(
     return padded, report
 
 
-def spherical_envelope(
-    surface_mm: np.ndarray, dx_mm: float, dy_mm: float, radius_mm: float
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """球形偏置上包络（§3.2）：max over 椭圆盘 (du,dv) [surface + √(R²−r²)]。
+def _cell_sample_patterns(order: int) -> list[tuple[float, float, float, float, float, float]]:
+    """单元内两三角的重心细分格 → (w00,w10,w01,w11, lx, ly)。
 
+    三角剖分与 grid_surface_trimesh 同构（对角线 (0,0)-(1,1)）；权重是对应
+    三角顶点的重心系数（另一角为 0），保证 σ 值 = 分片线性表面的精确插值。
+    lx/ly 为单元内位置（0..1，单位为格距）。对角线上的公共点按权重去重。
+    """
+
+    corner_slot = {(0.0, 0.0): 0, (1.0, 0.0): 1, (0.0, 1.0): 2, (1.0, 1.0): 3}
+    triangles = (((0, 0), (1, 0), (1, 1)), ((0, 0), (0, 1), (1, 1)))
+    patterns: dict[tuple[float, float, float, float], tuple[float, ...]] = {}
+    for v0, v1, v2 in triangles:
+        for i in range(order + 1):
+            for j in range(order + 1 - i):
+                k = order - i - j
+                weights = [0.0, 0.0, 0.0, 0.0]
+                for vertex, coefficient in ((v0, i), (v1, j), (v2, k)):
+                    weights[corner_slot[vertex]] += coefficient / order
+                lx = (i * v0[0] + j * v1[0] + k * v2[0]) / order
+                ly = (i * v0[1] + j * v1[1] + k * v2[1]) / order
+                key = (weights[0], weights[1], weights[2], weights[3])
+                patterns.setdefault(key, (*key, lx, ly))
+    return [tuple(pattern) for pattern in patterns.values()]
+
+
+def spherical_envelope(
+    surface_mm: np.ndarray,
+    dx_mm: float,
+    dy_mm: float,
+    radius_mm: float,
+    *,
+    subdivision_order: int = SUBDIVISION_ORDER,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """球形偏置上包络（§3.2）：以三角面重心细分采样为球心取上半最大值。
+
+    球心不只放在网格顶点：单元两三角按重心细分格离散连续曲面（与独立验收
+    采样同一口径），每个球心对水平距离 ≤ radius 的节点 deposit
+    z_sample + √(R²−d²)（d 为球心到节点的精确水平距离）。核心性质保持：
+    每个节点是某单元角 σ，(0,0) 偏移 lift = R ⇒ envelope ≥ surface + R 处处。
     radius_mm = t_effective + discretization_guard_mm（由调用方决定 guard 并记录）。
-    网格外无实体，越界贡献记 −inf（不虚构版面外材料）；(0,0) 偏移保证
-    envelope ≥ surface + R ≥ surface + t_effective 处处成立。
     """
 
     surface = np.asarray(surface_mm, dtype=np.float64)
     if radius_mm <= 0.0:
         raise ValueError("包络半径必须为正")
+    if subdivision_order < 1:
+        raise ValueError("subdivision_order 必须 ≥ 1")
     ny, nx = surface.shape
-    du_max = int(math.floor(radius_mm / dx_mm))
-    offsets: list[tuple[int, int, float]] = []
-    for du in range(-du_max, du_max + 1):
-        rest2 = radius_mm**2 - (du * dx_mm) ** 2
-        if rest2 < 0.0:
-            continue
-        dv_limit = int(math.floor(math.sqrt(rest2) / dy_mm))
-        for dv in range(-dv_limit, dv_limit + 1):
-            lift = math.sqrt(radius_mm**2 - (du * dx_mm) ** 2 - (dv * dy_mm) ** 2)
-            offsets.append((du, dv, lift))
+    if ny < 2 or nx < 2:
+        raise ValueError("包络需要 ≥ 2×2 高度场（否则不存在三角面）")
+    patterns = _cell_sample_patterns(subdivision_order)
+    z00, z10 = surface[:-1, :-1], surface[:-1, 1:]
+    z01, z11 = surface[1:, :-1], surface[1:, 1:]
+    radius_sq = radius_mm**2
     envelope = np.full((ny, nx), -np.inf)
-    for du, dv, lift in offsets:
-        # envelope[i,j] 取 surface[i-du, j-dv] + lift（球心在被偏移单元）
-        i0d, i1d = max(0, du), min(nx, nx + du)
-        j0d, j1d = max(0, dv), min(ny, ny + dv)
-        i0s, i1s = i0d - du, i1d - du
-        j0s, j1s = j0d - dv, j1d - dv
-        view = envelope[j0d:j1d, i0d:i1d]
-        np.maximum(view, surface[j0s:j1s, i0s:i1s] + lift, out=view)
-    if not np.isfinite(envelope).all():  # (0,0) 偏移保证不会发生；防御性断言
+    used_offsets: set[tuple[int, int]] = set()
+    for w00, w10, w01, w11, lx, ly in patterns:
+        field = w00 * z00 + w10 * z10 + w01 * z01 + w11 * z11
+        k_min = -int(math.floor((radius_mm + lx * dx_mm) / dx_mm)) - 1
+        k_max = int(math.floor((radius_mm + (1.0 - lx) * dx_mm) / dx_mm)) + 1
+        l_min = -int(math.floor((radius_mm + ly * dy_mm) / dy_mm)) - 1
+        l_max = int(math.floor((radius_mm + (1.0 - ly) * dy_mm) / dy_mm)) + 1
+        for k in range(k_min, k_max + 1):
+            d2x = ((k - lx) * dx_mm) ** 2
+            if d2x > radius_sq:
+                continue
+            for row_offset in range(l_min, l_max + 1):
+                d2 = d2x + ((row_offset - ly) * dy_mm) ** 2
+                if d2 > radius_sq:
+                    continue
+                # 目标节点 = 单元原点 + (k, row_offset)，须落在 0..n-1；源单元行 0..n-2
+                sr0, sr1 = max(0, -row_offset), min(ny - 1, ny - row_offset)
+                sc0, sc1 = max(0, -k), min(nx - 1, nx - k)
+                if sr0 >= sr1 or sc0 >= sc1:
+                    continue
+                lift = math.sqrt(radius_sq - d2)
+                used_offsets.add((k, row_offset))
+                view = envelope[sr0 + row_offset : sr1 + row_offset, sc0 + k : sc1 + k]
+                np.maximum(view, field[sr0:sr1, sc0:sc1] + lift, out=view)
+    if not np.isfinite(envelope).all():  # 角点 σ 的 (0,0) 偏移保证不会发生
         raise ValueError("包络计算出现未覆盖单元")
     report = {
         "radius_mm": float(radius_mm),
-        "offsets": len(offsets),
+        "subdivision_order": int(subdivision_order),
+        "samples_per_cell": len(patterns),
+        "surface_samples": int(len(patterns) * (ny - 1) * (nx - 1)),
+        "offsets": len(used_offsets),
         "radius_px_x": radius_mm / float(dx_mm),
         "radius_px_y": radius_mm / float(dy_mm),
     }
@@ -208,34 +267,183 @@ def grid_surface_trimesh(z_mm: np.ndarray, width_mm: float, height_mm: float) ->
     return trimesh.Trimesh(points, faces, process=False)
 
 
-def _surface_samples(mesh: trimesh.Trimesh) -> np.ndarray:
-    """确定性表面采样：顶点 + 三边中点 + 面心（弦长误差 ~O(edge²/8R)，入报告）。"""
+def _barycentric_samples(mesh: trimesh.Trimesh, order: int) -> np.ndarray:
+    """确定性重心细分采样（每面 (m+1)(m+2)/2 点，含三顶点；不去重）。"""
 
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    faces = np.asarray(mesh.faces, dtype=np.int64)
-    corners = vertices[faces]
-    return np.vstack(
+    corners = np.asarray(mesh.vertices, dtype=np.float64)[
+        np.asarray(mesh.faces, dtype=np.int64)
+    ]  # (F,3,3)
+    lattice = (
+        np.array(
+            [(i, j, order - i - j) for i in range(order + 1) for j in range(order + 1 - i)],
+            dtype=np.float64,
+        )
+        / order
+    )  # (L,3)
+    return (corners[:, None, :, :] * lattice[None, :, :, None]).sum(axis=2).reshape(-1, 3)
+
+
+def _closest_point_distances(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """点到三角面精确距离（Ericson《Real-Time Collision Detection》5.1.5 向量化）。
+
+    points (N,3)、triangles (N,K,3,3) → (N,K) 距离；退化三角（面积 0）回退
+    三顶点最近点，不产生 NaN。高度场网格间距恒正，正常输入不会退化。
+    """
+
+    a, b, c = triangles[..., 0, :], triangles[..., 1, :], triangles[..., 2, :]
+    ab, ac = b - a, c - a
+    p = points[:, None, :]
+    ap, bp, cp = p - a, p - b, p - c
+    d1, d2 = (ab * ap).sum(-1), (ac * ap).sum(-1)
+    d3, d4 = (ab * bp).sum(-1), (ac * bp).sum(-1)
+    d5, d6 = (ab * cp).sum(-1), (ac * cp).sum(-1)
+    vc, vb, va = d1 * d4 - d3 * d2, d5 * d2 - d1 * d6, d3 * d6 - d5 * d4
+
+    def _edge(base: np.ndarray, vector: np.ndarray, num: np.ndarray, den: np.ndarray) -> np.ndarray:
+        safe = den != 0.0
+        t = np.clip(np.where(safe, num / np.where(safe, den, 1.0), 0.0), 0.0, 1.0)
+        return np.linalg.norm(p - (base + t[..., None] * vector), axis=-1)
+
+    face_den = va + vb + vc
+    non_degenerate = face_den > 0.0
+    v = np.where(non_degenerate, vb / np.where(face_den != 0.0, face_den, 1.0), 0.0)
+    w = np.where(non_degenerate, vc / np.where(face_den != 0.0, face_den, 1.0), 0.0)
+    face_distance = np.where(
+        non_degenerate,
+        np.linalg.norm(p - (a + v[..., None] * ab + w[..., None] * ac), axis=-1),
+        np.inf,
+    )
+    vertex_min = np.minimum(
+        np.linalg.norm(ap, axis=-1),
+        np.minimum(np.linalg.norm(bp, axis=-1), np.linalg.norm(cp, axis=-1)),
+    )
+    region_distance = np.select(
         [
-            vertices,
-            0.5 * (corners[:, 0] + corners[:, 1]),
-            0.5 * (corners[:, 1] + corners[:, 2]),
-            0.5 * (corners[:, 2] + corners[:, 0]),
-            corners.mean(axis=1),
+            (d1 <= 0.0) & (d2 <= 0.0),  # A 顶点区
+            (d3 >= 0.0) & (d4 <= d3),  # B 顶点区
+            (d6 >= 0.0) & (d5 <= d6),  # C 顶点区
+            (vc <= 0.0) & (d1 >= 0.0) & (d3 <= 0.0),  # AB 边区
+            (vb <= 0.0) & (d2 >= 0.0) & (d6 <= 0.0),  # AC 边区
+            (va <= 0.0) & (d4 - d3 >= 0.0) & (d5 - d6 >= 0.0),  # BC 边区
+        ],
+        [
+            np.linalg.norm(ap, axis=-1),
+            np.linalg.norm(bp, axis=-1),
+            np.linalg.norm(cp, axis=-1),
+            _edge(a, ab, d1, d1 - d3),
+            _edge(a, ac, d2, d2 - d6),
+            _edge(b, c - b, d4 - d3, (d4 - d3) + (d5 - d6)),
+        ],
+        default=face_distance,
+    )
+    return np.where(non_degenerate, region_distance, vertex_min)
+
+
+def _exact_mesh_distance(
+    points: np.ndarray, mesh: trimesh.Trimesh, *, candidates: int = _DISTANCE_CANDIDATES
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """每个采样点到整张三角网格的精确最近距离。
+
+    质心 KD-tree 取前 candidates 个候选，先只对最近 _DISTANCE_EXACT_SLOTS 个
+    精确算距（真距离的上界）；用"第 k 近质心距离 − 外接半径 ≥ 上界"作证书——
+    成立时上界 ≥ 真值 ≥ 下界 ≥ 上界，三者相等即精确值。不满足的点用
+    上界 + 外接半径做球查询，对面内全部三角矢量化重算——此后结果按构造精确。
+    """
+
+    corners = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(mesh.faces, dtype=np.int64)]
+    centroids = corners.mean(axis=1)
+    circum_max = float(np.linalg.norm(corners - centroids[:, None, :], axis=2).max())
+    tree = cKDTree(centroids)
+    k = int(min(candidates, len(corners)))
+    slots = min(_DISTANCE_EXACT_SLOTS, k)
+    best = np.empty(len(points), dtype=np.float64)
+    kth_last = np.empty(len(points), dtype=np.float64)
+    for start in range(0, len(points), _DISTANCE_CHUNK):
+        stop = min(start + _DISTANCE_CHUNK, len(points))
+        kth, idx = tree.query(points[start:stop], k=k, workers=-1)
+        if k == 1:
+            kth, idx = kth[:, None], idx[:, None]
+        best[start:stop] = _closest_point_distances(
+            points[start:stop], corners[idx[:, :slots]]
+        ).min(axis=1)
+        kth_last[start:stop] = kth[:, -1]
+    uncertain = (kth_last - circum_max) < best - 1e-12
+    refined = int(uncertain.sum())
+    if refined:
+        sub = points[uncertain]
+        radii = best[uncertain] + circum_max + 1e-12
+        lists = tree.query_ball_point(sub, radii)
+        counts = np.fromiter((len(ids) for ids in lists), dtype=np.int64, count=len(lists))
+        point_index = np.repeat(np.arange(len(sub)), counts)
+        flat_faces = (
+            np.concatenate([np.asarray(ids, dtype=np.int64) for ids in lists])
+            if counts.sum()
+            else np.empty(0, dtype=np.int64)
+        )
+        pair_best = np.empty(len(point_index), dtype=np.float64)
+        for start in range(0, len(point_index), _DISTANCE_CHUNK):
+            stop = min(start + _DISTANCE_CHUNK, len(point_index))
+            pair_best[start:stop] = _closest_point_distances(
+                sub[point_index[start:stop]], corners[flat_faces[start:stop]][:, None, :]
+            )[:, 0]
+        exact = np.full(len(sub), np.inf)
+        np.minimum.at(exact, point_index, pair_best)
+        best[uncertain] = np.minimum(best[uncertain], exact)
+    stats = {
+        "candidate_faces": k,
+        "fast_exact_faces": slots,
+        "circumradius_max_mm": circum_max,
+        "certificate_refined_points": refined,
+    }
+    return best, stats
+
+
+def _max_edge_mm(mesh: trimesh.Trimesh) -> float:
+    corners = np.asarray(mesh.vertices, dtype=np.float64)[np.asarray(mesh.faces, dtype=np.int64)]
+    edges = np.stack(
+        [
+            corners[:, 1] - corners[:, 0],
+            corners[:, 2] - corners[:, 1],
+            corners[:, 0] - corners[:, 2],
         ]
     )
+    return float(np.linalg.norm(edges, axis=-1).max())
 
 
-def bidirectional_min_distance(mesh_a: trimesh.Trimesh, mesh_b: trimesh.Trimesh) -> dict[str, Any]:
-    """双向独立最近距离（KD-tree 点集采样；规划书 §3.2 验收）。"""
+def bidirectional_min_distance(
+    mesh_a: trimesh.Trimesh,
+    mesh_b: trimesh.Trimesh,
+    *,
+    subdivision_order: int = SUBDIVISION_ORDER,
+) -> dict[str, Any]:
+    """双向独立最近距离（M1-R1）：细分采样 → 精确点到三角面（§3.2 验收）。
 
-    samples_a = _surface_samples(mesh_a)
-    samples_b = _surface_samples(mesh_b)
-    a_to_b = float(cKDTree(samples_b).query(samples_a, workers=-1)[0].min())
-    b_to_a = float(cKDTree(samples_a).query(samples_b, workers=-1)[0].min())
+    报告的 min_mm 是连续三角面最小距离的可复算上界：两面各自按重心细分格
+    采样，每个采样点到对面网格的距离精确；采样密度误差由 sampling_bound_mm
+    （最大棱长 / (√3 × 细分阶)，子三角外接半径）给出，conservative_min_mm
+    = min − bound 是真实间隙的证书化下界。不读包络公式场，不以公式自证。
+    """
+
+    samples_a = _barycentric_samples(mesh_a, subdivision_order)
+    samples_b = _barycentric_samples(mesh_b, subdivision_order)
+    dist_a, stats_a = _exact_mesh_distance(samples_a, mesh_b)
+    dist_b, stats_b = _exact_mesh_distance(samples_b, mesh_a)
+    a_to_b, b_to_a = float(dist_a.min()), float(dist_b.min())
+    bound = max(_max_edge_mm(mesh_a), _max_edge_mm(mesh_b)) / (math.sqrt(3.0) * subdivision_order)
     return {
+        "method": DISTANCE_METHOD,
         "min_mm": min(a_to_b, b_to_a),
         "a_to_b_mm": a_to_b,
         "b_to_a_mm": b_to_a,
         "samples_a": int(len(samples_a)),
         "samples_b": int(len(samples_b)),
+        "points_per_face": (subdivision_order + 1) * (subdivision_order + 2) // 2,
+        "subdivision_order": int(subdivision_order),
+        "sampling_bound_mm": bound,
+        "conservative_min_mm": min(a_to_b, b_to_a) - bound,
+        "certified": True,  # 半径证书兜底后每点精确（见 _exact_mesh_distance）
+        "certificate": {
+            "a_to_b": stats_a,
+            "b_to_a": stats_b,
+        },
     }

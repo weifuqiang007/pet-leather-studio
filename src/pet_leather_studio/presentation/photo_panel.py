@@ -819,9 +819,10 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"底板 {parameters.get('backing_mm')} mm",
             "配合间隙：设计 ≥ 有效皮厚；独立实测最小 "
             f"{check.get('min_mm', 0.0):.3f} mm"
-            f"（容差 {data.get('distance_tolerance_mm', 0.0):.3f}；"
-            f"双向采样 {check.get('samples_a', 0)}/{check.get('samples_b', 0)} 点；"
-            f"guard {check.get('guard_mm', 0.0):.3f} mm）",
+            f"（点到三角面双向，容差 {data.get('distance_tolerance_mm', 0.0):.3f}；"
+            f"采样界 {check.get('sampling_bound_mm', 0.0):.3f}；"
+            f"双向采样 {check.get('samples_a', 0)}/{check.get('samples_b', 0)} 点 ×"
+            f"{check.get('points_per_face', 0)}/面；guard {check.get('guard_mm', 0.0):.3f} mm）",
             f"Z 向间隙最小 {data.get('axial_gap_min_mm', 0.0):.3f} mm（>0 不相交）；"
             f"阳模接触面单侧最陡 {slope.get('max_deg', 0.0):.1f}°",
             f"重读校验：水密；表面最大误差 "

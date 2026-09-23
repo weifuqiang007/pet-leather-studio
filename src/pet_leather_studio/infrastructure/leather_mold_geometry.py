@@ -3,7 +3,8 @@
 不重新射线采样：直接读母版 heightfield.npz（native 路径，细节逐位保留）。
 外部 OBJ/STL/PLY 仍走 MeshGeometry 兼容路径（legacy candidate，不在此实现）。
 发布前验证：双实体重读水密/体积/边界/逐列上下表面（≤1e-4 mm）、
-双向独立最近距离 ≥ t_effective − 容差（guard 自动加密重算）、
+双向独立最近距离（细分采样 + 精确点到三角面 + 半径证书）≥ t_effective − 容差
+（guard 自动加密重算，超出档位拒绝发布）、
 Z 向间隙处处为正；任一失败抛错，由应用层丢弃 staging。
 """
 
@@ -132,7 +133,8 @@ def _readme_text(parameters: LeatherMoldParameters, metadata: dict[str, Any]) ->
             f"参数：{parameters.to_dict()}",
             f"有效皮厚 t_eff = {metadata['target_effective_thickness_mm']:.3f} mm；"
             f"独立实测最小距离 {metadata['clearance_independent']['min_mm']:.3f} mm"
-            f"（容差 {metadata['distance_tolerance_mm']:.3f} mm）",
+            f"（点到三角面双向，容差 {metadata['distance_tolerance_mm']:.3f} mm，"
+            f"采样界 {metadata['clearance_independent']['sampling_bound_mm']:.3f} mm）",
             f"版面：{metadata['plate']['final_width_mm']:.1f} × "
             f"{metadata['plate']['final_height_mm']:.1f} mm{expansion_note}",
             f"几何校验：{metadata['geometry_checks']}",
@@ -259,6 +261,11 @@ class LeatherMoldGeometry:
             normal_clearance_mm=normal_field,
             target_effective_thickness_mm=t_effective,
             independent_min_distance_mm=clearance_check["min_mm"],
+            independent_a_to_b_mm=clearance_check["a_to_b_mm"],
+            independent_b_to_a_mm=clearance_check["b_to_a_mm"],
+            independent_sampling_bound_mm=clearance_check["sampling_bound_mm"],
+            subdivision_order=clearance_check["subdivision_order"],
+            distance_method=np.array(clearance_check["method"]),
             independent_stats=np.array(
                 [clearance_check["samples_a"], clearance_check["samples_b"]]
             ),
@@ -270,7 +277,7 @@ class LeatherMoldGeometry:
             flat_stop=heights <= FLAT_STOP_EPS_MM,
             core_rows=np.asarray(core_rows),
             core_cols=np.asarray(core_cols),
-            schema_version=1,
+            schema_version=2,
         )
 
         warnings = [

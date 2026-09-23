@@ -72,3 +72,59 @@ scripts/dev.sh run --frozen python experiments/photo_relief/run_m1_leather_molds
 ## 回退版本
 
 分支起点 `8caf845`；开工备份 `runtime/backups/20260923-glm-leather-mold-m1-start.bundle`。修订史 append-only：回退 = 在 GUI 激活旧修订（或 `git revert` 本次提交后重建环境），三份 mold_pair 修订与其母版、照片链历史文件均不被修改或删除。
+
+---
+
+# M1-R1 修复：独立测距换为双向点到三角面（2026-09-23）
+
+独立验收（`leather-mold-M1-acceptance-review.md`）判定 M1 **P0 未过**：内置 `bidirectional_min_distance()` 只做采样点之间的 KD-tree 点到点距离，不能代表连续三角面最小距离。上文 §几何验收记录中旧"独立最小距离"列即该口径（数值上与用户 PyVista/VTK 点到三角面复核 1.820675 / 1.819664 / 1.832146 mm 接近，但方法论无效，不得作为通过依据）。R1 按报告五项要求修复，修复后重新生成三份候选。
+
+## 修改内容（对应验收报告"必须修改的实现"）
+
+1. **双向点到三角面距离**：`bidirectional_min_distance()` 重写。两面各自按三角面**重心细分格**采样（`SUBDIVISION_ORDER=4`，每面 (m+1)(m+2)/2 = 15 点，不去重），对每个采样点计算到**对面整张三角网格**的精确最近距离（Ericson《Real-Time Collision Detection》5.1.5 向量化：3 顶点区 + 3 边区 + 面区，退化三角回退顶点距离）。不调用 `spherical_envelope()`、不读公式场回填。
+2. **可复算的方法与密度记录**：manifest/`mold_pair.npz` 记录 `distance_method`、`subdivision_order`、`points_per_face`、双向采样总数、`a_to_b_mm`/`b_to_a_mm`、`sampling_bound_mm`（= 最大棱长 /(√3×order)，子三角外接半径覆盖界）、`conservative_min_mm = min − bound`（真实间隙的**证书化下界**）与 `certificate` 统计（候选面数 96 / 精确槽 8 / 最大外接半径 / 精化点数）。证书口径：第 96 近质心距离 − 最大外接半径 ≥ 当前上界 ⇒ 上界=真值=下界，结果**按构造精确**；不满足的采样点用上界+外接半径做球查询，对面内全部三角矢量化重算。
+3. **包络源同一细分 + guard**：`spherical_envelope()` 球心同样取三角面重心细分格（order 4、25 点/格；实测 88/88/148 个不同偏移），与验收器共用同一 `SUBDIVISION_ORDER`（集成测试断言一致）。独立测距不达标时 guard 三档 (0, 1, 2)×容差 逐档**独立复测**，仍不达标拒绝发布。
+4. **内部最近点反例回归**：`test_point_to_triangle_interior_nearest_counterexample`——B 的低顶点悬在 A 大三角面内部上方 0.12 mm 处；旧 5 点采样（保留为 `_legacy_point_samples`，仅回归对照）点到点报 0.731 mm，按 0.5 mm 门限会**错误放行**；新验收器报 0.120 mm（最近点对在 A 面内部，`b_to_a_mm`），必须拒绝或加 guard。这正是 P0 缺口的可执行证明。
+5. **三份真实候选已重新生成**（见下表；修订史 append-only，旧修订原样保留）。
+
+附带性能修复：初版逐点 Python 精化循环导致 30×63 测试网格单次 generate 24.2 s；改为分块 k-NN 查询 + 矢量化球查询精化后 **1.13 s**（21×），全套件恢复到 64.7 s。真实模具生成 30.7–45.2 s/对。
+
+## R1 验证
+
+```text
+scripts/dev.sh run --frozen python -m pytest tests -m 'not real_model'
+    208 passed, 2 deselected（新增反例回归 1 项；含 tests/gui 17 项真机运行）
+scripts/dev.sh run --frozen ruff check .            通过
+scripts/dev.sh run --frozen ruff format --check .   通过
+scripts/dev.sh run --frozen mypy src/pet_leather_studio/domain src/pet_leather_studio/application
+    通过（strict，无 type:ignore）
+scripts/dev.sh run --frozen python experiments/photo_relief/run_m1_leather_molds.py
+    返回码 0，追加三份 mold_pair 修订
+```
+
+## R1 几何验收记录（三张真实母版重生成，t_eff 1.850 mm，guard 均 0 档）
+
+| 样例 | 母版 | 新 mold_pair | 耗时 | 双向 a→b / b→a mm | 保守下界（门） | 采样（×2 向） | 证书精化点 | 核心逐位 | 最陡坡度 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 短毛犬 | `9c37b28a` | `5692c8dd` | 30.7 s | 1.825494 / 1.825500 | 1.720495（≥1.7480） | 982 830 ×15/面 | 165 / 166 | 是 | 44.8° |
+| 猫 | `bef3f6cc` | `b7b3e789` | 29.6 s | 1.822858 / 1.822892 | 1.715536（≥1.7480） | 961 230 ×15/面 | 121 / 133 | 是 | 44.2° |
+| 长毛犬 | `bdb68708` | `5d2e4afc` | 45.2 s | 1.835879 / 1.835936 | 1.754416（≥1.7763） | 1 317 600 ×15/面 | 59 411 / 175 568 | 是 | 43.9° |
+
+- **双向点到三角面最小距离全部过门**，且扣除采样界后的**证书化下界也过门**（这是比旧口径更强的结论：连续面真实间隙 ≥ 保守下界 ≥ 验收门）。
+- 与用户独立 PyVista/VTK 复核同向吻合且更保守（1.8255 vs 1.8207 / 1.8229 vs 1.8197 / 1.8359 vs 1.8321，差 ≤ 0.004 mm ≪ 容差 0.102/0.074 mm）。
+- 采样密度：每面 15 点（细分 order 4），是旧 5 点口径的 3 倍；采样界 0.105 / 0.107 / 0.081 mm 全部入 manifest。
+- 长毛犬（dx 0.295 mm 细网格）证书精化点最多（b→a 13.3%），全部由矢量化球查询兜底，`certified=true`。
+- Z 向最小间隙均 1.8500 mm；OBJ/STL 重读水密、边界误差 ≈ 4.8e-07 mm；包络核 order 4 / 25 点每格 / 球心 81.9 万–109.8 万；体积：阳模 29468/30236/20945、阴模 35637/33477/24391 mm³（包络加密后阴模腔略深，体积与 M1 初版相差 <0.03%）。
+
+## R1 产物路径（新修订；旧 `af6902eb`/`d99cb085`/`aa4fa55c` 原样保留可回退）
+
+- `workspace/photo-relief-p1/20260921-110433/short_hair_dog/revisions/5692c8dd…/`
+- `workspace/photo-relief-p1/20260921-110433/cat/revisions/b7b3e789…/`
+- `workspace/photo-relief-p1/20260921-110433/long_hair_dog/revisions/5d2e4afc…/`
+- 机器总账（含完整 method/双向值/证书统计）：`experiments/photo_relief/out/m1-leather-molds/report_data.json`；装配渲染同目录 `<key>/<key>-assembly-{front,side,iso}.png`。
+
+## R1 后边界（不变）
+
+`manufacturing_validated=false`、模具与母版 `visual_review=pending`；几何复验数据如上，**是否记为 M1 几何验收通过由用户按验收报告复验条件判定**；实物试压（M3）前须用户在 GUI 完成视觉复核。球形包络圆化半径 < t_eff 凹谷、单格尖峰依赖 guard 兜底、源照片分辨率边界（0.408/0.295 mm 采样间距）均维持 M1 声明。
+
+R1 完成后打唯一新标签 `leather-mold-m1-r1`（不移动任何旧标签）。
