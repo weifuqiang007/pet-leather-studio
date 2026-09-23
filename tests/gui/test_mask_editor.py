@@ -84,6 +84,20 @@ def test_zoomed_click_lands_within_one_pixel(qtbot, work_png: Path) -> None:
     assert abs(float(ys.mean()) - iy) <= 1.0
 
 
+def test_pan_mode_moves_canvas_without_painting(qtbot, work_png: Path) -> None:
+    dialog = _shown(qtbot, MaskEditorDialog(work_png))
+    canvas = dialog.canvas
+    before = canvas._offset
+    dialog.pan_mode.setChecked(True)
+
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(150, 160))
+    qtbot.mouseMove(canvas, QPoint(235, 255))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(235, 255))
+
+    assert canvas._offset == pytest.approx((before[0] + 85, before[1] + 95))
+    assert np.count_nonzero(canvas.buffer.mask) == 0
+
+
 def test_threshold_draft_coverage_and_method(qtbot, work_png: Path) -> None:
     dialog = _shown(qtbot, MaskEditorDialog(work_png))
     dialog.threshold_level.setValue(128)

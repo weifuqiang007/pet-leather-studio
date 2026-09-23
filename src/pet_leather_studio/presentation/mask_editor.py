@@ -43,9 +43,12 @@ class MaskCanvas(QWidget):
         self.buffer = MaskBuffer(mask)
         self.brush_radius = 8
         self.brush_value = MASK_ON
+        self.pan_mode = False
         self.manual_painted = False  # 画笔手工修改标记（阈值初稿不算手工）
         self._scale = 1.0
         self._offset = (0.0, 0.0)
+        self._pan_origin: tuple[float, float] | None = None
+        self._pan_start_offset: tuple[float, float] | None = None
         self._overlay = self._build_overlay()
         self.setMouseTracking(True)
         self.setMinimumSize(420, 420)
@@ -80,8 +83,8 @@ class MaskCanvas(QWidget):
         super().resizeEvent(event)
 
     def wheelEvent(self, event) -> None:  # noqa: ANN001 - Qt 签名
-        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
-        new_scale = float(np.clip(self._scale * factor, 0.05, 40.0))
+        factor = 1.12 if event.angleDelta().y() > 0 else 1.0 / 1.12
+        new_scale = float(np.clip(self._scale * factor, 0.05, 20.0))
         anchor = (event.position().x(), event.position().y())
         image_point = self.mapper().widget_to_image(*anchor)
         self._scale = new_scale
@@ -90,6 +93,12 @@ class MaskCanvas(QWidget):
             self._offset[0] + anchor[0] - widget_point[0],
             self._offset[1] + anchor[1] - widget_point[1],
         )
+        self.update()
+
+    def reset_view(self) -> None:
+        """恢复适应窗口的缩放与位置，便于从局部编辑回到全图。"""
+
+        self._fit()
         self.update()
 
     def _build_overlay(self) -> QImage:
@@ -137,17 +146,41 @@ class MaskCanvas(QWidget):
         self.update_overlay()
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001 - Qt 签名
-        if event.button() == Qt.MouseButton.LeftButton:
+        should_pan = event.button() == Qt.MouseButton.MiddleButton or (
+            event.button() == Qt.MouseButton.LeftButton and self.pan_mode
+        )
+        if should_pan:
+            self._pan_origin = (event.position().x(), event.position().y())
+            self._pan_start_offset = self._offset
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton:
             self.buffer.snapshot()
             self._paint_at(event.position().x(), event.position().y())
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001 - Qt 签名
-        if event.buttons() & Qt.MouseButton.LeftButton:
+        if self._pan_origin is not None and self._pan_start_offset is not None:
+            self._offset = (
+                self._pan_start_offset[0] + event.position().x() - self._pan_origin[0],
+                self._pan_start_offset[1] + event.position().y() - self._pan_origin[1],
+            )
+            self.update()
+            event.accept()
+        elif event.buttons() & Qt.MouseButton.LeftButton and not self.pan_mode:
             self._paint_at(event.position().x(), event.position().y())
         else:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001 - Qt 签名
+        if self._pan_origin is not None:
+            self._pan_origin = None
+            self._pan_start_offset = None
+            self.unsetCursor()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     def apply_array(self, arr: np.ndarray) -> None:
         self.buffer.set_mask(arr)
@@ -195,13 +228,17 @@ class MaskEditorDialog(QDialog):
         self.erase_mode = QRadioButton("擦除")
         self.add_mode.setChecked(True)
         self.add_mode.toggled.connect(self._sync_brush)
+        self.pan_mode = QRadioButton("拖动画面")
+        self.pan_mode.toggled.connect(self._sync_brush)
         controls.addWidget(self.add_mode)
         controls.addWidget(self.erase_mode)
+        controls.addWidget(self.pan_mode)
 
         for label, handler in (
             ("撤销", self._undo),
             ("重做", self._redo),
             ("清空", self._clear),
+            ("适应窗口", self.canvas.reset_view),
         ):
             button = QPushButton(label)
             button.clicked.connect(handler)
@@ -233,6 +270,7 @@ class MaskEditorDialog(QDialog):
     def _sync_brush(self) -> None:
         self.canvas.brush_radius = self.radius.value()
         self.canvas.brush_value = MASK_OFF if self.erase_mode.isChecked() else MASK_ON
+        self.canvas.pan_mode = self.pan_mode.isChecked()
 
     def _refresh_status(self) -> None:
         coverage = float((self.canvas.buffer.mask > 127).mean())
@@ -243,6 +281,7 @@ class MaskEditorDialog(QDialog):
                 if self.initial_from_alpha
                 else "阈值初稿仅为辅助（浅背景假设），人工修正后按 manual 记录"
             )
+            + "；拖动画面模式可左键拖拽，也可随时按住中键拖拽；“适应窗口”可恢复全图"
         )
 
     def _undo(self) -> None:
