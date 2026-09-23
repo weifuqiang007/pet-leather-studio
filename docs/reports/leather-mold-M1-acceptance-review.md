@@ -140,3 +140,34 @@ R1 正确把 `conservative_min_mm = min_mm - sampling_bound_mm` 定义为连续�
 4. 更正 [leather-mold-M1.md](leather-mold-M1.md) 的 R1 表格和结论，不能在上述门改变
    前将 M1 写为几何验收通过。
 
+---
+
+## R2 复验（提交 `b887d26`，标签 `leather-mold-m1-r2`）
+
+**结论：M1 软件几何验收通过。**
+
+R2 已将 guard 循环和最终拒绝统一改为：
+
+```text
+conservative_min_mm >= t_effective - distance_tolerance_mm
+```
+
+因此只有扣除连续表面采样界后的保守下界过门，才能发布 `mold_pair` 修订。新增两条
+集成回归分别钉住“原始距离过门但下界失败时必须升 guard”和“三档 guard 后下界仍失败时
+必须拒绝且 staging 为空”。
+
+三份 R2 候选的实际 manifest 与 `mold_pair.npz` 已独立复算：
+
+| 样本 | 修订 | guard mm | 原始最小 mm | 采样界 mm | 保守下界 mm | 验收门 mm | 结果 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 短毛犬 | `97f9b67f` | 0.102041 | 1.929910 | 0.104999 | 1.824910 | 1.747959 | 通过（+0.076951） |
+| 猫 | `47178876` | 0.102041 | 1.925108 | 0.107322 | 1.817786 | 1.747959 | 通过（+0.069827） |
+| 长毛犬 | `ef0a0971` | 0.073668 | 1.910512 | 0.081464 | 1.829048 | 1.776332 | 通过（+0.052717） |
+
+三个修订均包含完整 OBJ/STL/VTP/NPZ/README 文件，核心高度场逐位保持，导出实体水密。
+完整复验为 `210 passed, 2 deselected`；ruff、format、strict mypy 以及真实深度模型测试
+（`2 passed`）均通过。
+
+本结论只覆盖软件生成的连续三角面间隙、文件完整性和版本可复算性。三个修订继续保持
+`visual_review=pending` 和 `manufacturing_validated=false`：用户仍需在 GUI 审看母版与模具，
+并完成低起伏测试块和实际皮革试压，才能作出制造可用性结论。
