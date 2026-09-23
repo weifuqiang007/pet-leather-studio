@@ -61,6 +61,14 @@ def test_brush_undo_redo_exact_restore(qtbot, work_png: Path) -> None:
     assert np.array_equal(canvas.buffer.mask, painted)
 
 
+def test_embedded_alpha_initial_mask_records_its_provenance(qtbot, work_png: Path) -> None:
+    initial = np.zeros((60, 80), dtype=np.uint8)
+    initial[10:50, 20:60] = 255
+    dialog = _shown(qtbot, MaskEditorDialog(work_png, initial, initial_from_alpha=True))
+    assert dialog.mask_method == MaskMethod.EMBEDDED_ALPHA
+    assert "透明通道" in dialog.status.text()
+
+
 def test_zoomed_click_lands_within_one_pixel(qtbot, work_png: Path) -> None:
     dialog = _shown(qtbot, MaskEditorDialog(work_png))
     dialog.radius.setValue(4)

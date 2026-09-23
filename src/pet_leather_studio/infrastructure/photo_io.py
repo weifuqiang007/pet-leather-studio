@@ -36,7 +36,18 @@ class PhotoIO:
             with Image.open(original) as image:
                 width_px, height_px = image.size
                 orientation = int(image.getexif().get(274, 1) or 1)
-                work = ImageOps.exif_transpose(image).convert("RGB")
+                oriented = ImageOps.exif_transpose(image)
+                rgba = oriented.convert("RGBA")
+                alpha = rgba.getchannel("A")
+                has_transparent_background = alpha.getextrema()[0] < 255
+                if has_transparent_background:
+                    # 推理输入要求 RGB，但不能把透明背景的未定义 RGB（常为纯黑）
+                    # 当作真实场景。以浅灰底预合成，同时原样保存 Alpha 作为可编辑初稿。
+                    matte = Image.new("RGBA", rgba.size, (245, 245, 245, 255))
+                    work = Image.alpha_composite(matte, rgba).convert("RGB")
+                    alpha.save(stage / "alpha_mask.png")
+                else:
+                    work = oriented.convert("RGB")
             work.save(stage / "work.png")
         except Exception as exc:
             raise ValueError(f"无法解码照片（{original.name}）：{exc}") from exc
@@ -46,6 +57,14 @@ class PhotoIO:
             warnings.append(
                 f"输入分辨率 {width_px}×{height_px}px 低于建议 {RECOMMENDED_LONG_EDGE_PX}px；"
                 "放大不会增加原始细节，精细验收需更高清原图"
+            )
+        alpha_coverage: float | None = None
+        if has_transparent_background:
+            alpha_array = np.asarray(alpha, dtype=np.uint8)
+            alpha_coverage = float((alpha_array > MASK_BINARY_THRESHOLD).mean())
+            warnings.append(
+                "检测到原图透明通道：已保留 alpha_mask.png 作为蒙版编辑初稿；"
+                "请检查耳尖、胡须和边缘后保存蒙版"
             )
         return {
             "schema_version": 2,
@@ -59,6 +78,8 @@ class PhotoIO:
             "work_height_px": work.height,
             "exif_orientation": orientation,
             "coordinate_transform": "exif_transpose" if orientation != 1 else "none",
+            "alpha_mask_available": has_transparent_background,
+            "alpha_mask_coverage": alpha_coverage,
             "warnings": warnings,
         }
 

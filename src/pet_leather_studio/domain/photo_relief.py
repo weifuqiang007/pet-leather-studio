@@ -54,6 +54,7 @@ class PhotoStage(StrEnum):
 class MaskMethod(StrEnum):
     MANUAL = "manual"
     THRESHASSISTED = "threshold_assisted"
+    EMBEDDED_ALPHA = "embedded_alpha"
 
 
 class DepthSemantics(StrEnum):

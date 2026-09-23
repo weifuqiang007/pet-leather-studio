@@ -62,6 +62,30 @@ def test_exif_orientation_transposes_work_image(tmp_path: Path) -> None:
         assert corner[0] > 180 and corner[1] < 90 and corner[2] < 90
 
 
+def test_import_preserves_transparent_alpha_as_editable_mask(tmp_path: Path) -> None:
+    """透明 PNG 不能在 RGB 工作图中退化成黑背景，Alpha 须成为可编辑初稿。"""
+
+    rgba = np.zeros((20, 30, 4), dtype=np.uint8)
+    rgba[4:16, 7:23, :3] = (100, 90, 80)
+    rgba[4:16, 7:23, 3] = 255
+    rgba[3, 7:23, 3] = 96  # 半透明边缘必须被保留，供编辑器显示
+    source = tmp_path / "cutout.png"
+    Image.fromarray(rgba, mode="RGBA").save(source)
+
+    metadata = PhotoIO().prepare_import(source, _stage(tmp_path, "s"))
+
+    assert metadata["alpha_mask_available"] is True
+    assert metadata["alpha_mask_coverage"] == pytest.approx(12 * 16 / (20 * 30))
+    assert any("透明通道" in warning for warning in metadata["warnings"])
+    with Image.open(tmp_path / "s" / "alpha_mask.png") as alpha:
+        saved = np.asarray(alpha)
+        assert alpha.mode == "L"
+        assert saved[5, 8] == 255 and saved[3, 8] == 96 and saved[0, 0] == 0
+    with Image.open(tmp_path / "s" / "work.png") as work:
+        # 透明背景被浅灰底预合成，而非透明像素携带的黑色 RGB 值。
+        assert work.getpixel((0, 0)) == (245, 245, 245)
+
+
 def test_rejects_garbage_and_unsupported_suffix(tmp_path: Path) -> None:
     garbage = tmp_path / "bad.png"
     garbage.write_bytes(b"\x89PNG\r\n\x1a\n not a real image")

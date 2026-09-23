@@ -859,11 +859,18 @@ class PhotoWorkbenchWindow(QMainWindow):
         photo_id = str(photo["id"])
         work_png = self.service.store.directory(photo_id) / "work.png"
         initial = None
+        initial_from_alpha = False
         latest = self._latest_mask(photo_id)
         if latest is not None:
             with Image.open(self.service.store.directory(latest["id"]) / "mask.png") as image:
                 initial = np.asarray(image, dtype=np.uint8)
-        dialog = MaskEditorDialog(work_png, initial, self)
+        else:
+            alpha_mask = self.service.store.directory(photo_id) / "alpha_mask.png"
+            if alpha_mask.is_file():
+                with Image.open(alpha_mask) as image:
+                    initial = np.asarray(image.convert("L"), dtype=np.uint8)
+                initial_from_alpha = True
+        dialog = MaskEditorDialog(work_png, initial, initial_from_alpha, self)
         if dialog.exec() != MaskEditorDialog.DialogCode.Accepted:
             return
         from pet_leather_studio.bootstrap.environment import data_root

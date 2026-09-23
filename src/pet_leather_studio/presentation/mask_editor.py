@@ -161,6 +161,7 @@ class MaskEditorDialog(QDialog):
         self,
         work_png: Path,
         initial_mask: np.ndarray | None = None,
+        initial_from_alpha: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -175,6 +176,7 @@ class MaskEditorDialog(QDialog):
         )
         self.canvas = MaskCanvas(base, mask0, None)
         self.init_threshold_level: int | None = None
+        self.initial_from_alpha = initial_from_alpha
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.canvas)
@@ -236,7 +238,11 @@ class MaskEditorDialog(QDialog):
         coverage = float((self.canvas.buffer.mask > 127).mean())
         self.status.setText(
             f"操作次数：{self.canvas.buffer.edits}；主体覆盖率：{coverage:.1%}；"
-            "阈值初稿仅为辅助（浅背景假设），人工修正后按 manual 记录"
+            + (
+                "初稿来自图片透明通道；请检查耳尖、胡须和边缘后保存"
+                if self.initial_from_alpha
+                else "阈值初稿仅为辅助（浅背景假设），人工修正后按 manual 记录"
+            )
         )
 
     def _undo(self) -> None:
@@ -273,4 +279,6 @@ class MaskEditorDialog(QDialog):
     def mask_method(self) -> MaskMethod:
         if not self.canvas.manual_painted and self.init_threshold_level is not None:
             return MaskMethod.THRESHASSISTED
+        if not self.canvas.manual_painted and self.initial_from_alpha:
+            return MaskMethod.EMBEDDED_ALPHA
         return MaskMethod.MANUAL
