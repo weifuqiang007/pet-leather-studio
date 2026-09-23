@@ -1,6 +1,6 @@
 # 皮革压制阴阳模生成规划书
 
-**状态**：待实现。  
+**状态**：M1 已交付（2026-09-23，标签 `leather-mold-m1`，交付报告 `docs/reports/leather-mold-M1.md`）；M2/M3 待实现。  
 **前置输入**：已冻结并通过视觉复核的照片浮雕母版修订。  
 **目标**：从一份 `master` 母版生成可 3D 打印的阳模、阴模 OBJ/STL 文件，并保存可复算的配合间隙、皮革参数、版本关系和几何验收结果。
 
@@ -271,3 +271,26 @@ python -m pet_leather_studio --project <project> generate-leather-molds \
 
 当前照片浮雕母版仍需保留 `visual_review` 和实物试压边界。模具生成必须继承这些状态，不能
 因为 OBJ/STL 水密就把产品标记为制造合格。
+
+---
+
+## 9. M1 交付状态回写（2026-09-23）
+
+本节为 M1 执行结果回写；上文各节仍是计划文本，冲突时以本节、交付报告与代码为准。
+
+- **交付范围**：§6 M1 全部 8 项——`domain/leather_molds.py`、`algorithms/leather_mold_pair.py`、
+  `application/leather_mold_workbench.py`（含 `LeatherMoldGeometryPort`）、
+  `infrastructure/leather_mold_geometry.py`（原生 `heightfield.npz` 路径，不重采样）、
+  `bootstrap/workbench.py` 组装、同库 `kind="mold_pair"` 修订（parent=master）、CLI
+  `generate-leather-molds`、GUI 模具面板与装配预览。§7 M1 代码与几何验收全部满足。
+- **验证**：`pytest tests -m 'not real_model'` 207 passed / 2 deselected（新增 34 项：
+  单元 13、集成 15、GUI 3）；ruff / format / mypy（domain+application strict）通过。
+- **真机几何验收**（三张 R3 母版，t_eff 1.850 mm，默认参数）：三对模具
+  `af6902eb` / `d99cb085` / `aa4fa55c` 全部扩边（60 mm → 73.9 / 73.1 / 70.6×53.9 mm），
+  guard 均 0 档达标，独立双向测距最小 1.8207 / 1.8197 / 1.8321 mm ≥ 各自验收门
+  1.7480 / 1.7480 / 1.7763 mm，核心逐位不变，OBJ/STL 重读水密且边界误差 ≈ 4.8e-07 mm。
+  详见 `docs/reports/leather-mold-M1.md` 与本机总账
+  `experiments/photo_relief/out/m1-leather-molds/report_data.json`。
+- **边界保持**：`manufacturing_validated=false`、模具与母版 `visual_review=pending`
+  （继承为警告）；M2（间隙层界面、assembly_report、resample）与 M3（定位柱/孔、排气槽、
+  试压记录）未实现，external_jig 仅 README 说明。

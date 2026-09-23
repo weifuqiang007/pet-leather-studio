@@ -61,6 +61,10 @@
 | `src/pet_leather_studio/infrastructure/photo_inference.py` | 新增 | 调用隔离推理进程，验证模型清单、输出格式、设备、错误与取消；不在模块导入时下载或加载权重 |
 | `src/pet_leather_studio/infrastructure/photo_geometry.py` | 新增 | 将高度数据转换为 VTP/OBJ/STL 和 LOD；复用已有实体算法，记录单位及几何检查 |
 | `src/pet_leather_studio/infrastructure/reference_profile.py` | 新增 | 参考 OBJ 正面及基准选择、测量与标定文件；不把包围盒 Z 跨度直接等同有效浮雕高度 |
+| `src/pet_leather_studio/domain/leather_molds.py` | M1 新增 | 皮革阴阳模参数 dataclass、t_eff、端口协议与 external_jig 声明（规划见 `docs/MOLD-PAIR-IMPLEMENTATION-PLAN.md`）；只用标准库 |
+| `src/pet_leather_studio/algorithms/leather_mold_pair.py` | M1 新增 | 单侧坡度、平铺扩边（核心逐位不变）、球形偏置上包络、独立双向最近距离；纯数值函数，公式不得自证验收 |
+| `src/pet_leather_studio/infrastructure/leather_mold_geometry.py` | M1 新增 | 原生 heightfield.npz → 阳模/阴模 OBJ/STL/VTP/NPZ 与几何验收；guard 逐档加密，不重采样照片母版 |
+| `src/pet_leather_studio/application/leather_mold_workbench.py` | M1 新增 | 母版→mold_pair 修订用例：四上游复验、visual_review/warnings 继承、原子发布；kind=mold_pair 同库追加 |
 | `src/pet_leather_studio/presentation/photo_panel.py` | 新增 | 照片/蒙版/深度/中性模型切换、阶段状态及参数表单；不直接导入推理库 |
 | `src/pet_leather_studio/presentation/mask_editor.py` | 新增 | 叠加、缩放、画笔添加/擦除、撤销/重做；坐标映射独立测试 |
 | `src/pet_leather_studio/presentation/height_adjust_dialog.py` | 新增 | 局部结构调整对话框（P2 已实现）：高度色图底 + 刷选区域、每区域偏移/过渡、撤销/重做；复用 MaskCanvas，不写库 |

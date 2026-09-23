@@ -43,6 +43,14 @@ from pet_leather_studio.algorithms.relief_height import (
 )
 from pet_leather_studio.application.photo_workbench import PhotoWorkbench
 from pet_leather_studio.domain.errors import ResourceMissingError
+from pet_leather_studio.domain.leather_molds import (
+    COMPRESSION_ALLOWANCE_MM_RANGE,
+    EDGE_MARGIN_MM_RANGE,
+    LEATHER_THICKNESS_MM_RANGE,
+    MIN_CLEARANCE_MM_RANGE,
+    MOLD_BACKING_MM_RANGE,
+    LeatherMoldParameters,
+)
 from pet_leather_studio.domain.photo_relief import (
     BASE_THICKNESS_MM_RANGE,
     DEFAULT_DETAIL_STRENGTH,
@@ -217,6 +225,40 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.section_button.clicked.connect(self.show_section)
         controls.addWidget(self.section_button)
 
+        controls.addWidget(QLabel("皮革阴阳模（M1：球形偏置包络；须先有照片母版）"))
+        mold_form = QFormLayout()
+        self.mold_leather = QDoubleSpinBox()
+        self.mold_leather.setRange(LEATHER_THICKNESS_MM_RANGE[0], LEATHER_THICKNESS_MM_RANGE[1])
+        self.mold_leather.setDecimals(2)
+        self.mold_leather.setValue(2.0)
+        mold_form.addRow("皮革实测厚度 mm", self.mold_leather)
+        self.mold_allowance = QDoubleSpinBox()
+        self.mold_allowance.setRange(
+            COMPRESSION_ALLOWANCE_MM_RANGE[0], COMPRESSION_ALLOWANCE_MM_RANGE[1]
+        )
+        self.mold_allowance.setDecimals(2)
+        self.mold_allowance.setValue(0.15)
+        mold_form.addRow("闭模压实余量 mm", self.mold_allowance)
+        self.mold_min_clearance = QDoubleSpinBox()
+        self.mold_min_clearance.setRange(MIN_CLEARANCE_MM_RANGE[0], MIN_CLEARANCE_MM_RANGE[1])
+        self.mold_min_clearance.setDecimals(2)
+        self.mold_min_clearance.setValue(0.3)
+        mold_form.addRow("最小有效间隙 mm", self.mold_min_clearance)
+        self.mold_backing = QDoubleSpinBox()
+        self.mold_backing.setRange(MOLD_BACKING_MM_RANGE[0], MOLD_BACKING_MM_RANGE[1])
+        self.mold_backing.setDecimals(1)
+        self.mold_backing.setValue(5.0)
+        mold_form.addRow("承压底板厚度 mm", self.mold_backing)
+        self.mold_edge_margin = QDoubleSpinBox()
+        self.mold_edge_margin.setRange(EDGE_MARGIN_MM_RANGE[0], EDGE_MARGIN_MM_RANGE[1])
+        self.mold_edge_margin.setDecimals(1)
+        self.mold_edge_margin.setValue(4.0)
+        mold_form.addRow("平坦止口宽度 mm（不足自动扩边）", self.mold_edge_margin)
+        controls.addLayout(mold_form)
+        self.mold_button = QPushButton("生成皮革阴阳模（generate-leather-molds · 隔离进程）")
+        self.mold_button.clicked.connect(self.generate_leather_molds)
+        controls.addWidget(self.mold_button)
+
         controls.addWidget(QLabel("历史版本（选中仅预览；激活才回退）"))
         self.versions = QComboBox()
         self.versions.currentIndexChanged.connect(self.show_selected)
@@ -231,6 +273,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             self.activate_button,
             self.adjust_button,
             self.master_button,
+            self.mold_button,
             self.calibrate_button,
         )
         self.open_button = QPushButton("打开选中版本文件夹")
@@ -312,6 +355,12 @@ class PhotoWorkbenchWindow(QMainWindow):
                 mask = self._maybe_get(data.get("mask_id"))
                 depth = self._maybe_get(data.get("depth_id"))
                 return photo, mask, depth
+            if kind == "mold_pair":
+                master = self._maybe_get(data.get("master_id"))
+                photo = self._maybe_get(master.get("photo_id") if master else None)
+                mask = self._maybe_get(master.get("mask_id") if master else None)
+                depth = self._maybe_get(master.get("depth_id") if master else None)
+                return photo, mask, depth
         except (ValueError, OSError):
             return None, None, None
         return None, None, None
@@ -376,7 +425,8 @@ class PhotoWorkbenchWindow(QMainWindow):
         target = self.view.currentText()
         try:
             photo_master = kind == "master" and data.get("input_method") == "photo_reconstruction"
-            if kind not in ("photo", "mask", "depth") and not photo_master:
+            mold_pair = kind == "mold_pair"
+            if kind not in ("photo", "mask", "depth") and not photo_master and not mold_pair:
                 if kind in ("master", "mold"):
                     message = "该修订属于模具工作台（python -m pet_leather_studio）预览。"
                 else:
@@ -397,6 +447,9 @@ class PhotoWorkbenchWindow(QMainWindow):
             elif target == VIEW_3D and photo_master:
                 self._add_master_mesh(data)
                 message = self._master_text(data)
+            elif target == VIEW_3D and mold_pair:
+                self._add_mold_mesh(data)
+                message = self._mold_text(data)
             elif target == VIEW_3D and depth is not None:
                 self._add_depth_mesh(depth)
                 message = self._depth_text(depth)
@@ -404,6 +457,8 @@ class PhotoWorkbenchWindow(QMainWindow):
                 message = "当前工程尚无该视图所需数据；请先生成蒙版或运行深度推理。"
             if photo_master and target != VIEW_3D:
                 message = self._master_text(data)  # 母版详情始终展示（画布为所选上游视图）
+            if mold_pair and target != VIEW_3D:
+                message = self._mold_text(data)
             if auto_filled:
                 message += (
                     "\n（注：所选修订缺该环节，已用同照片最新修订预览；编辑/推理以所选链路为准。）"
@@ -478,6 +533,14 @@ class PhotoWorkbenchWindow(QMainWindow):
     def _add_master_mesh(self, data: dict[str, Any]) -> None:
         mesh = pv.read(self.service.store.directory(data["id"]) / "preview.vtp")
         self.viewer.add_mesh(mesh, color="ivory", smooth_shading=True)
+
+    def _add_mold_mesh(self, data: dict[str, Any]) -> None:
+        """M1 装配预览：阳模接触面象牙色 + 阴模内表面半透明（闭模位，间隙即皮厚层）。"""
+        directory = self.service.store.directory(data["id"])
+        male = pv.read(directory / "male.vtp")
+        female = pv.read(directory / "female.vtp")
+        self.viewer.add_mesh(male, color="ivory", smooth_shading=True)
+        self.viewer.add_mesh(female, color="steelblue", opacity=0.35, smooth_shading=True)
 
     def _preview_parameters(self) -> ReliefParameters:
         # StrEnum 经 QVariant 往返可能退化为 str，须用等值比较而非 is
@@ -734,6 +797,42 @@ class PhotoWorkbenchWindow(QMainWindow):
         lines.extend(data.get("warnings", []))
         return "\n".join(str(line) for line in lines if line)
 
+    @staticmethod
+    def _mold_text(data: dict[str, Any]) -> str:
+        parameters = data.get("parameters", {})
+        plate = data.get("plate", {})
+        check = data.get("clearance_independent", {})
+        expansion = data.get("expansion", {})
+        slope = data.get("slope", {})
+        lines = [
+            "皮革阴阳模 · leather-mold-pair-v1（球形偏置上包络；几何候选，未实物验证）",
+            f"源母版 {str(data.get('master_id'))[:8]}；版面 "
+            f"{plate.get('final_width_mm', 0.0):.1f} × {plate.get('final_height_mm', 0.0):.1f} mm"
+            + (
+                f"（已扩边：过渡 {expansion.get('transition_mm', 0.0):.1f} mm + 纯平止口）"
+                if expansion.get("expanded")
+                else ""
+            ),
+            f"皮厚 {parameters.get('leather_thickness_mm')} − 压实 "
+            f"{parameters.get('compression_allowance_mm')} ⇒ 有效皮厚 "
+            f"{data.get('target_effective_thickness_mm', 0.0):.3f} mm；"
+            f"底板 {parameters.get('backing_mm')} mm",
+            "配合间隙：设计 ≥ 有效皮厚；独立实测最小 "
+            f"{check.get('min_mm', 0.0):.3f} mm"
+            f"（容差 {data.get('distance_tolerance_mm', 0.0):.3f}；"
+            f"双向采样 {check.get('samples_a', 0)}/{check.get('samples_b', 0)} 点；"
+            f"guard {check.get('guard_mm', 0.0):.3f} mm）",
+            f"Z 向间隙最小 {data.get('axial_gap_min_mm', 0.0):.3f} mm（>0 不相交）；"
+            f"阳模接触面单侧最陡 {slope.get('max_deg', 0.0):.1f}°",
+            f"重读校验：水密；表面最大误差 "
+            f"{data.get('geometry_checks', {}).get('surface_max_error_mm')} mm（门 1e-4）",
+            "文件：male/female .obj/.stl/.vtp、mold_pair.npz、assembly_preview.vtp、README.txt",
+        ]
+        if data.get("master_visual_review") != "approved":
+            lines.append("⚠ 源母版 visual_review 未approved：几何验收不替代视觉复核")
+        lines.extend(data.get("warnings", []))
+        return "\n".join(str(line) for line in lines if line)
+
     # ---- 任务（CLI 子进程，GUI 不直接写库） ----
 
     def import_photo(self):
@@ -895,6 +994,50 @@ class PhotoWorkbenchWindow(QMainWindow):
             )
         self._job_clears_adjustments = bool(self._pending_adjustments)
         self.start_job(arguments)
+
+    def generate_leather_molds(self):
+        """M1：选中照片母版 → generate-leather-molds 子进程（GUI 不直接写库）。"""
+        data = self._selected()
+        if (
+            not data
+            or data.get("kind") != "master"
+            or data.get("input_method") != "photo_reconstruction"
+        ):
+            QMessageBox.warning(
+                self,
+                "缺少照片母版",
+                "请先在历史版本中选择照片重建母版（master · photo_reconstruction）再生成阴阳模。",
+            )
+            return
+        parameters = LeatherMoldParameters(
+            leather_thickness_mm=self.mold_leather.value(),
+            compression_allowance_mm=self.mold_allowance.value(),
+            min_clearance_mm=self.mold_min_clearance.value(),
+            backing_mm=self.mold_backing.value(),
+            edge_margin_mm=self.mold_edge_margin.value(),
+        )
+        try:
+            parameters.validate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "参数无效", str(exc))
+            return
+        self.start_job(
+            [
+                "generate-leather-molds",
+                "--master",
+                str(data["id"]),
+                "--leather-thickness-mm",
+                f"{parameters.leather_thickness_mm:g}",
+                "--compression-allowance-mm",
+                f"{parameters.compression_allowance_mm:g}",
+                "--min-clearance-mm",
+                f"{parameters.min_clearance_mm:g}",
+                "--backing-mm",
+                f"{parameters.backing_mm:g}",
+                "--edge-margin-mm",
+                f"{parameters.edge_margin_mm:g}",
+            ]
+        )
 
     def calibrate_reference(self):
         name, _ = QFileDialog.getOpenFileName(

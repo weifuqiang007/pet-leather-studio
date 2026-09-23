@@ -444,6 +444,104 @@ def test_master_text_flags_slope_exceedance() -> None:
     assert "⚠" not in PhotoWorkbenchWindow._master_text({"slope": gentle})
 
 
+def test_generate_leather_molds_argument_assembly(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """M1：选中照片母版 → CLI 参数由模具表单拼装；未选母版只警告不起任务。"""
+    store, service, depth_id = _build_chain(tmp_path)
+    master = service.build_master(
+        depth_id, ReliefParameters(width_mm=40.0, depth_mm=1.5, base_thickness_mm=2.0)
+    )
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.versions.setCurrentIndex(window.versions.findData(depth_id))  # 深度修订：非母版
+
+    warned: list[str] = []
+
+    def fake_warning(parent, title, text, *args, **kwargs):
+        warned.append(title)
+        return None
+
+    monkeypatch.setattr(
+        "pet_leather_studio.presentation.photo_panel.QMessageBox.warning", fake_warning
+    )
+    window.generate_leather_molds()
+    assert warned and window.process is None  # 拒绝并说明，不起任务
+
+    captured: list[list[str]] = []
+
+    def capture(arguments):
+        captured.append(list(arguments))
+
+    window.start_job = capture
+    window.mold_leather.setValue(2.0)
+    window.mold_allowance.setValue(0.15)
+    window.mold_min_clearance.setValue(0.3)
+    window.mold_backing.setValue(5.0)
+    window.mold_edge_margin.setValue(4.0)
+    window.versions.setCurrentIndex(window.versions.findData(master.revision_id))
+    window.generate_leather_molds()
+    assert captured == [
+        [
+            "generate-leather-molds",
+            "--master",
+            master.revision_id,
+            "--leather-thickness-mm",
+            "2",
+            "--compression-allowance-mm",
+            "0.15",
+            "--min-clearance-mm",
+            "0.3",
+            "--backing-mm",
+            "5",
+            "--edge-margin-mm",
+            "4",
+        ]
+    ]
+
+
+def test_mold_pair_view_dispatch(qtbot, tmp_path: Path) -> None:
+    """M1：mold_pair 修订三维装配预览（阳模 + 半透明阴模）与详情；上游视图可达。"""
+    from pet_leather_studio.application.leather_mold_workbench import (  # noqa: E402
+        LeatherMoldWorkbench,
+    )
+    from pet_leather_studio.domain.leather_molds import LeatherMoldParameters  # noqa: E402
+    from pet_leather_studio.infrastructure.leather_mold_geometry import (  # noqa: E402
+        LeatherMoldGeometry,
+    )
+
+    store, service, depth_id = _build_chain(tmp_path)
+    master = service.build_master(
+        depth_id, ReliefParameters(width_mm=40.0, depth_mm=1.5, base_thickness_mm=2.0)
+    )
+    pair = LeatherMoldWorkbench(store, LeatherMoldGeometry()).generate(
+        master.revision_id, LeatherMoldParameters()
+    )
+    window = PhotoWorkbenchWindow(service, tmp_path / "proj")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitUntil(lambda: window.viewer.renderer is not None)
+    window.versions.setCurrentIndex(window.versions.findData(pair.revision_id))
+    window.view.setCurrentText(VIEW_3D)
+    assert len(window.viewer.renderer.actors) > 0  # male.vtp + female.vtp 装配
+    text = window.details.toPlainText()
+    assert "皮革阴阳模" in text and "leather-mold-pair-v1" in text
+    assert "独立实测最小" in text and "重读校验" in text
+    assert "visual_review 未approved" in text  # pending 继承须界面明示
+    assert "外治具" in text or "external_jig" in text  # 定位说明随警告展示
+
+    window.view.setCurrentText(VIEW_PHOTO)  # 上游照片视图可达，详情仍为模具信息
+    assert len(window.viewer.renderer.actors) > 0
+    assert "皮革阴阳模" in window.details.toPlainText()
+    window.close()
+
+
+def test_mold_text_flags_pending_master_only() -> None:
+    """M1：母版未 approved 时详情给 ⚠ 行；approved 后不重复告警。"""
+    text = PhotoWorkbenchWindow._mold_text({"master_visual_review": "pending"})
+    assert "⚠" in text
+    approved = PhotoWorkbenchWindow._mold_text({"master_visual_review": "approved"})
+    assert "⚠" not in approved
+
+
 def test_section_dialog_profiles_master(qtbot, tmp_path: Path) -> None:
     """R2：侧面截面对话框画高度剖面（穿过最高点）并给截面内最陡坡度。"""
     store, service, depth_id = _build_chain(tmp_path)

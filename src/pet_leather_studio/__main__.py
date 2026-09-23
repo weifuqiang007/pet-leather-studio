@@ -73,6 +73,16 @@ def parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--root", type=Path, default=None, help="标定存储目录")
     sub.add_parser("photo-profiles").add_argument("--root", type=Path, default=None)
     sub.add_parser("photo-history")
+    leather = sub.add_parser("generate-leather-molds")
+    leather.add_argument("--master", required=True)
+    leather.add_argument("--leather-thickness-mm", type=float, default=2.0)
+    leather.add_argument("--compression-allowance-mm", type=float, default=0.15)
+    leather.add_argument("--min-clearance-mm", type=float, default=0.3)
+    leather.add_argument("--backing-mm", type=float, default=5.0)
+    leather.add_argument("--edge-margin-mm", type=float, default=4.0)
+    leather.add_argument("--max-plate-mm", type=float, default=120.0)
+    leather.add_argument("--sampling-feature-mm", type=float, default=0.2)
+    leather.add_argument("--sampling-mode", choices=["native", "resample"], default="native")
     prune = sub.add_parser("prune-staging")
     prune.add_argument("--min-age-hours", type=float, default=1.0)
     sub.add_parser("photo")
@@ -94,6 +104,7 @@ def main() -> int:
         "save-mask",
         "estimate-depth",
         "build-master",
+        "generate-leather-molds",
         "calibrate-reference",
         "photo-profiles",
         "photo-history",
@@ -163,6 +174,29 @@ def main() -> int:
                             falloff_band_mm=args.falloff_mm,
                         ),
                         tuple(adjustments),
+                    )
+                )
+            elif args.command == "generate-leather-molds":
+                from dataclasses import asdict
+
+                from pet_leather_studio.bootstrap.workbench import (
+                    create_leather_mold_workbench,
+                )
+                from pet_leather_studio.domain.leather_molds import LeatherMoldParameters
+
+                output = asdict(
+                    create_leather_mold_workbench(project).generate(
+                        args.master,
+                        LeatherMoldParameters(
+                            leather_thickness_mm=args.leather_thickness_mm,
+                            compression_allowance_mm=args.compression_allowance_mm,
+                            min_clearance_mm=args.min_clearance_mm,
+                            backing_mm=args.backing_mm,
+                            edge_margin_mm=args.edge_margin_mm,
+                            max_plate_mm=args.max_plate_mm,
+                            sampling_feature_mm=args.sampling_feature_mm,
+                            sampling_mode=args.sampling_mode,
+                        ),
                     )
                 )
             elif args.command == "calibrate-reference":
