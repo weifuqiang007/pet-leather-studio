@@ -15,7 +15,12 @@ from pet_leather_studio.bootstrap import environment
 environment.apply_local_env()
 
 from pet_leather_studio.domain.photo_relief import MaskMethod  # noqa: E402
-from pet_leather_studio.presentation.mask_editor import MaskEditorDialog  # noqa: E402
+from pet_leather_studio.presentation.mask_editor import (  # noqa: E402
+    MASK_TINT_RGBA,
+    REMOVED_VEIL_RGBA,
+    MaskEditorDialog,
+    overlay_rgba,
+)
 
 DARK_ROWS = slice(18, 42)
 DARK_COLS = slice(26, 54)
@@ -127,3 +132,37 @@ def test_erase_mode_removes_pixels(qtbot, work_png: Path) -> None:
     dialog._sync_brush()
     _click(qtbot, dialog, widget_x, widget_y)
     assert dialog.canvas.buffer.mask[30, 40] == 0
+
+
+def test_overlay_veil_makes_erase_visible() -> None:
+    """布局重做回归：保留区红色薄纱、已擦除/未选区深色遮罩——擦除结果必须可辨。"""
+
+    mask = np.zeros((10, 12), dtype=np.uint8)
+    mask[2:5, 3:7] = 255
+    rgba = overlay_rgba(mask)
+    assert tuple(rgba[3, 5]) == MASK_TINT_RGBA  # 保留：红色薄纱
+    assert tuple(rgba[0, 0]) == REMOVED_VEIL_RGBA  # 已擦除/未选：深色遮罩
+
+
+def test_photoshop_layout_canvas_dominates(qtbot, work_png: Path) -> None:
+    """布局重做回归：左侧窄工具栏、右侧大画布（画布占窗口主要宽度）。"""
+
+    dialog = _shown(qtbot, MaskEditorDialog(work_png))
+    assert dialog.canvas.width() > 0.6 * dialog.width()
+    assert dialog.pan_mode.isChecked() is False  # 默认落在画笔，不会误拖画布
+
+
+def test_space_drag_pans_without_painting(qtbot, work_png: Path) -> None:
+    """布局重做回归：空格+左键拖动 = 临时拖动图片（Photoshop 习惯），不落笔。"""
+
+    dialog = _shown(qtbot, MaskEditorDialog(work_png))
+    canvas = dialog.canvas
+    canvas.setFocus()
+    before = canvas._offset
+    qtbot.keyPress(canvas, Qt.Key.Key_Space)
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(100, 100))
+    qtbot.mouseMove(canvas, QPoint(160, 140))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(160, 140))
+    qtbot.keyRelease(canvas, Qt.Key.Key_Space)
+    assert canvas._offset == pytest.approx((before[0] + 60, before[1] + 40))
+    assert np.count_nonzero(canvas.buffer.mask) == 0
