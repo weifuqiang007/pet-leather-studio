@@ -124,6 +124,45 @@ def test_metadata_records_relief_and_checks(tmp_path: Path) -> None:
     assert metadata["geometry_checks"]["top_surface_max_error_mm"] <= GEOM_TOL_MM
 
 
+def test_dense_depth_is_downsampled_for_printable_mesh_export(tmp_path: Path) -> None:
+    """高分辨率深度不能逐像素生成 STL；导出网格按物理间距缩小且保持水密。"""
+
+    source_shape = (120, 160)
+    depth = np.repeat(np.linspace(0.2, 1.0, source_shape[0])[:, None], source_shape[1], axis=1)
+    source = tmp_path / "dense-depth.npz"
+    np.savez_compressed(
+        source,
+        depth=depth.astype(np.float32),
+        valid=np.ones(source_shape, dtype=bool),
+    )
+    stage = tmp_path / "dense-stage"
+    stage.mkdir()
+    metadata = PhotoGeometry().build_master(
+        source,
+        {"depth_semantics": "relative_larger_nearer"},
+        ReliefParameters(
+            width_mm=8.0,
+            depth_mm=1.5,
+            base_thickness_mm=2.0,
+            mesh_sampling_mm=0.15,
+        ),
+        None,
+        (),
+        stage,
+    )
+
+    sampling = metadata["mesh_sampling"]
+    assert sampling["applied"] is True
+    assert sampling["source_grid"] == [120, 160]
+    assert sampling["export_grid"] == [41, 55]
+    assert sampling["export_dx_mm"] <= 0.15
+    assert sampling["export_dy_mm"] <= 0.15
+    with np.load(stage / "heightfield.npz") as data:
+        assert data["heights_mm"].shape == (41, 55)
+        assert data["valid"].shape == (41, 55)
+    assert (stage / "master.stl").stat().st_size < 1_000_000
+
+
 def test_obj_reload_watertight_volume_bounds(tmp_path: Path) -> None:
     stage, metadata = _build(tmp_path)
     mesh = trimesh.load_mesh(stage / "master.obj", process=True)

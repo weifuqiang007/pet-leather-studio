@@ -59,6 +59,12 @@ def parser() -> argparse.ArgumentParser:
     master.add_argument("--base-mm", type=float, default=3.0)
     master.add_argument("--falloff-mm", type=float, default=2.5, help="蒙版边缘过渡带宽 mm（0=关）")
     master.add_argument(
+        "--mesh-sampling-mm",
+        type=float,
+        default=0.15,
+        help="母版 STL/OBJ 导出网格间距 mm（默认 0.15，避免逐像素超大网格）",
+    )
+    master.add_argument(
         "--adjustment",
         action="append",
         default=None,
@@ -172,6 +178,7 @@ def main() -> int:
                             detail_strength=args.detail_strength,
                             base_thickness_mm=args.base_mm,
                             falloff_band_mm=args.falloff_mm,
+                            mesh_sampling_mm=args.mesh_sampling_mm,
                         ),
                         tuple(adjustments),
                     )

@@ -21,6 +21,10 @@ DETAIL_STRENGTH_RANGE = (0.0, 1.0)
 DEFAULT_DETAIL_STRENGTH = 0.60
 # 母版加底实体的底板厚度（对齐模具 backing_mm 工程口径；浮雕基准 0，底板另计）
 BASE_THICKNESS_MM_RANGE = (1.0, 30.0)
+# 母版实体的导出网格间距。深度模型可以输出数百万像素，但打印机和皮革压制都不需要
+# 把每一像素变成一个三角面；0.15 mm 是 60 mm 级树脂打印模具的实用默认值。
+MESH_SAMPLING_MM_RANGE = (0.08, 1.0)
+DEFAULT_MESH_SAMPLING_MM = 0.15
 # 局部结构调整：偏移与过渡半径（mm；过渡平滑即防尖峰）
 LOCAL_OFFSET_MM_RANGE = (-20.0, 20.0)
 TRANSITION_MM_RANGE = (0.0, 50.0)
@@ -220,6 +224,7 @@ class ReliefParameters:
     detail_strength: float = 0.0
     base_thickness_mm: float = 3.0  # 加底实体底板厚度；浮雕基准 0，底板另计
     falloff_band_mm: float = DEFAULT_FALLOFF_BAND_MM  # 蒙版边界过渡带宽；0=关闭（域外严格为 0）
+    mesh_sampling_mm: float = DEFAULT_MESH_SAMPLING_MM
 
     def validate(self) -> None:
         for name, (low, high) in (
@@ -227,6 +232,7 @@ class ReliefParameters:
             ("depth_mm", DEPTH_MM_RANGE),
             ("base_thickness_mm", BASE_THICKNESS_MM_RANGE),
             ("falloff_band_mm", FALLOFF_BAND_MM_RANGE),
+            ("mesh_sampling_mm", MESH_SAMPLING_MM_RANGE),
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or not low <= value <= high:

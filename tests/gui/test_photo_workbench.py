@@ -300,6 +300,8 @@ def test_build_master_argument_assembly(qtbot, tmp_path: Path) -> None:
             "4",
             "--falloff-mm",
             "1.9",  # R2：按 1.25 mm 起伏自动填入建议带宽 ceil(1.5×1.25×10)/10
+            "--mesh-sampling-mm",
+            "0.15",
             "--smoothing-mm",
             "1.5",
             "--adjustment",

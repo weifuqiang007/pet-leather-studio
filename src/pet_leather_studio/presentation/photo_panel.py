@@ -57,10 +57,12 @@ from pet_leather_studio.domain.photo_relief import (
     BASE_THICKNESS_MM_RANGE,
     DEFAULT_DETAIL_STRENGTH,
     DEFAULT_FALLOFF_BAND_MM,
+    DEFAULT_MESH_SAMPLING_MM,
     DEPTH_MM_RANGE,
     FALLOFF_BAND_MM_RANGE,
     FALLOFF_BORDER_CLEARANCE_MM,
     FALLOFF_MAX_SLOPE,
+    MESH_SAMPLING_MM_RANGE,
     RECOMMENDED_MAX_RELIEF_MM,
     WIDTH_MM_RANGE,
     DepthSemantics,
@@ -221,6 +223,15 @@ class PhotoWorkbenchWindow(QMainWindow):
         self.base_thickness.setDecimals(1)
         self.base_thickness.setValue(3.0)
         master_form.addRow("底板厚度 mm（基准 0 另计）", self.base_thickness)
+        self.mesh_sampling = QDoubleSpinBox()
+        self.mesh_sampling.setRange(MESH_SAMPLING_MM_RANGE[0], MESH_SAMPLING_MM_RANGE[1])
+        self.mesh_sampling.setDecimals(2)
+        self.mesh_sampling.setSingleStep(0.05)
+        self.mesh_sampling.setValue(DEFAULT_MESH_SAMPLING_MM)
+        self.mesh_sampling.setToolTip(
+            "导出 STL/OBJ 的网格间距。数值越小文件越大；0.15 mm 适合 60 mm 级树脂打印模具。"
+        )
+        master_form.addRow("打印网格间距 mm（默认 0.15）", self.mesh_sampling)
         controls.addLayout(master_form)
 
         self.adjust_button = QPushButton("局部调整…（刷选区域 · 偏移/过渡）")
@@ -594,6 +605,7 @@ class PhotoWorkbenchWindow(QMainWindow):
             detail_strength=self.detail_strength.value(),
             base_thickness_mm=self.base_thickness.value(),
             falloff_band_mm=self.falloff_band.value(),
+            mesh_sampling_mm=self.mesh_sampling.value(),
         )
 
     def _current_profile(self):
@@ -797,6 +809,15 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"顶面最大误差 {checks.get('top_surface_max_error_mm')} mm（门 1e-4）",
         ]
         falloff = data.get("falloff", {})
+        mesh_sampling = data.get("mesh_sampling", {})
+        if mesh_sampling:
+            lines.append(
+                f"打印网格：源 {mesh_sampling.get('source_grid')} → 导出 "
+                f"{mesh_sampling.get('export_grid')}；间距 "
+                f"{mesh_sampling.get('export_dx_mm'):.3f} × "
+                f"{mesh_sampling.get('export_dy_mm'):.3f} mm"
+                + ("（已为打印缩小）" if mesh_sampling.get("applied") else "（未放大源网格）")
+            )
         if falloff.get("raised_points"):
             lines.append(
                 f"边缘过渡：带宽 {falloff.get('band_mm')} mm；域外抬升 "
@@ -1029,6 +1050,8 @@ class PhotoWorkbenchWindow(QMainWindow):
             f"{parameters.base_thickness_mm:g}",
             "--falloff-mm",
             f"{parameters.falloff_band_mm:g}",
+            "--mesh-sampling-mm",
+            f"{parameters.mesh_sampling_mm:g}",
         ]
         if parameters.smoothing_radius_mm is not None:
             arguments.extend(["--smoothing-mm", f"{parameters.smoothing_radius_mm:g}"])

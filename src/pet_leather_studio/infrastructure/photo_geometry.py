@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -24,6 +25,7 @@ from pet_leather_studio.algorithms.mold_solids import solid_between
 from pet_leather_studio.algorithms.relief_height import (
     controlled_heights_mm,
     image_to_geometry_rows,
+    slope_report,
 )
 from pet_leather_studio.domain.photo_relief import (
     RECOMMENDED_MAX_RELIEF_MM,
@@ -40,6 +42,73 @@ MASTER_ALGORITHM = "photo-relief-master-v1"
 PREVIEW_MAX_CELLS = 150_000  # 预览 LOD 上限（与导入母版同口径）
 GEOM_TOL_MM = 1e-4  # PH06 门：重读后单位/边界/起伏误差上限
 REGION_SELECTION_THRESHOLD = 127  # 局部调整区域 PNG 二值化阈值
+
+
+def _resample_export_heightfield(
+    heights: np.ndarray,
+    valid: np.ndarray,
+    width_mm: float,
+    height_mm: float,
+    target_spacing_mm: float,
+    relief_cap_mm: float,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """按物理打印间距缩小导出网格，保留源深度修订而不让每个像素成为一个三角面。
+
+    仅缩小、不放大：源高度场的原始精度仍在 depth 修订中，母版/模具只使用适合打印的
+    采样。高度以 float32 Lanczos 重采样，主体域以同样的连续掩码采样后二值化，输出的
+    dx/dy 由实际端点网格计算，避免把目标间距当作精确值。
+    """
+
+    source_ny, source_nx = heights.shape
+    source_dx = width_mm / (source_nx - 1)
+    source_dy = height_mm / (source_ny - 1)
+    target_nx = max(2, int(math.ceil(width_mm / target_spacing_mm)) + 1)
+    target_ny = max(2, int(math.ceil(height_mm / target_spacing_mm)) + 1)
+    target_nx = min(source_nx, target_nx)
+    target_ny = min(source_ny, target_ny)
+    if (target_ny, target_nx) == heights.shape:
+        return (
+            heights,
+            valid,
+            {
+                "applied": False,
+                "requested_spacing_mm": target_spacing_mm,
+                "source_grid": [source_ny, source_nx],
+                "export_grid": [source_ny, source_nx],
+                "source_dx_mm": source_dx,
+                "source_dy_mm": source_dy,
+                "export_dx_mm": source_dx,
+                "export_dy_mm": source_dy,
+            },
+        )
+
+    size = (target_nx, target_ny)
+    height_image = Image.fromarray(np.asarray(heights, dtype=np.float32), mode="F")
+    resized_heights = np.asarray(
+        height_image.resize(size, Image.Resampling.LANCZOS), dtype=np.float64
+    )
+    resized_heights = np.clip(resized_heights, 0.0, relief_cap_mm)
+    valid_image = Image.fromarray(np.asarray(valid, dtype=np.uint8) * 255, mode="L")
+    resized_valid = (
+        np.asarray(valid_image.resize(size, Image.Resampling.LANCZOS), dtype=np.uint8)
+        > REGION_SELECTION_THRESHOLD
+    )
+    export_dx = width_mm / (target_nx - 1)
+    export_dy = height_mm / (target_ny - 1)
+    return (
+        resized_heights,
+        resized_valid,
+        {
+            "applied": True,
+            "requested_spacing_mm": target_spacing_mm,
+            "source_grid": [source_ny, source_nx],
+            "export_grid": [target_ny, target_nx],
+            "source_dx_mm": source_dx,
+            "source_dy_mm": source_dy,
+            "export_dx_mm": export_dx,
+            "export_dy_mm": export_dy,
+        },
+    )
 
 
 def _load_region_masks(
@@ -159,9 +228,18 @@ class PhotoGeometry:
         )
         heights = image_to_geometry_rows(heights_work)  # 工作图 y 向下 → 几何 y 向上
         valid_geom = image_to_geometry_rows(valid)
-        ny, nx = heights.shape
+        source_ny, source_nx = heights.shape
         width_mm = float(parameters.width_mm)
-        height_mm = width_mm * ny / nx
+        height_mm = width_mm * source_ny / source_nx
+        heights, valid_geom, mesh_sampling = _resample_export_heightfield(
+            heights,
+            valid_geom,
+            width_mm,
+            height_mm,
+            parameters.mesh_sampling_mm,
+            float(report["resolved_depth_mm"]),
+        )
+        ny, nx = heights.shape
         dx, dy = width_mm / (nx - 1), height_mm / (ny - 1)
         base_mm = float(parameters.base_thickness_mm)
         if not np.isfinite(heights).all():
@@ -227,7 +305,8 @@ class PhotoGeometry:
             warnings.append("限幅改变了局部调整结果，详见 clamp_report（不静默截断）")
         # P2 复验 R3：实测坡度超 45° 目标与起伏超产品建议上限都必须落 manifest
         # 警告（可审计），GUI 另有醒目展示——建议带宽公式不含输入深度断层。
-        exceeded = slope_exceedances(report.get("slope") or {})
+        export_slope = slope_report(heights, valid_geom, dx, dy)
+        exceeded = slope_exceedances(export_slope)
         if exceeded:
             warnings.append(
                 f"坡度超限：{'、'.join(exceeded)} 超过 45° 目标"
@@ -258,12 +337,14 @@ class PhotoGeometry:
                 "detail_strength": parameters.detail_strength,
                 "base_thickness_mm": parameters.base_thickness_mm,
                 "falloff_band_mm": parameters.falloff_band_mm,
+                "mesh_sampling_mm": parameters.mesh_sampling_mm,
             },
             "height_resolution": height_resolution,
             "smoothing": report.get("smoothing"),
             "detail": report.get("detail"),
             "falloff": report.get("falloff"),
-            "slope": report.get("slope"),
+            "slope": export_slope,
+            "mesh_sampling": mesh_sampling,
             "adjustments": adjustment_records,
             "relief": {
                 "datum_z_mm": 0.0,
