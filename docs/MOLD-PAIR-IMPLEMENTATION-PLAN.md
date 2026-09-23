@@ -12,6 +12,10 @@
 
 本阶段交付的是**几何上配对、可打印、可试压的候选模具**，不声明已经验证最佳压力、树脂强度、皮革回弹、脱模寿命或批量生产安全性。每次实物试压必须记录皮革厚度、润湿方式、闭模位置、保压时间和结果，后续以这些记录校准参数。
 
+球形偏置上包络是“皮革不得穿入阳模”的保守几何模型，不是对真实湿润皮革弯曲、拉伸、
+压实或回弹的完整物理仿真。半径小于有效皮厚的凹谷会被包络圆化和跨越；这是皮革不能
+无代价贴入极窄凹槽的已知近似，不得作为几何 bug 隐瞒。
+
 不在第一版实现：
 
 - 自动预测最佳压机压力；
@@ -31,7 +35,7 @@
 - `infrastructure/mesh_geometry.py` 已能导出和重读验证 STL。
 - 修订仓库支持 append-only 历史、激活旧版本和篡改检测。
 
-现有 `MeshGeometry.generate()` 的缺口是：它会从 `master.vtp` 重新射线采样，可能降低照片母版的细节；间隙是固定 Z 向 `gap_mm`，没有表达皮革厚度；只导出 STL；没有定位、配合和间隙场报告。
+现有 `MeshGeometry.generate()` 的缺口是：它会从 `master.vtp` 重新射线采样，可能降低照片母版的细节；间隙是固定 Z 向 `gap_mm`，没有表达皮革厚度；只导出 STL；没有定位、配合和间隙场报告。现有 `MoldWorkbench`/`MoldParameters` 的 `kind="mold"` 外部导入路径保留为 **legacy candidate**，不在 M1 删除或改变其历史行为。
 
 **改造原则**：照片母版优先读取原修订中的 `heightfield.npz`；外部 OBJ/STL/PLY 仍可走现有射线采样兼容路径。高度场是阴阳模核心几何来源，定位孔等辅助特征才允许使用单独网格操作。
 
@@ -83,11 +87,14 @@ r² = (x-u)² + (y-v)²
 
 这相当于在离散高度场上构造阳模实体的外部安全包络，能圆化凸脊而不把局部
 `t / n_z` 当作真实距离。实现采用有限半径的离散核/最大卷积；核半径、网格间距和
-近似误差都必须进入 manifest。阴模实体的接触面是该包络，从下方观察形成与阳模对应的
-凹腔；阴模上方加足够厚的承压背板。阳模与阴模应在同一装配坐标系输出，便于直接导入
-Blender、切片软件或装配检查。
+近似误差都必须进入 manifest。离散实现不能只把网格顶点当作连续曲面：必须以每个
+高度场三角面为依据过采样，或加入可审计的 `discretization_guard_mm`，并在独立距离检查
+不通过时自动加密/增大 guard 后重算。阴模实体的接触面是该包络，从下方观察形成与阳模
+对应的凹腔；阴模上方加足够厚的承压背板。阳模与阴模应在同一装配坐标系输出，便于直接
+导入 Blender、切片软件或装配检查。
 
-验收时必须独立使用三角网格 BVH/KD-tree 对阳模、阴模内表面采样，计算最近点距离；
+验收时必须独立使用三角网格 BVH/KD-tree 对阳模、阴模内表面进行双向自适应采样，计算
+最近点距离；
 不得用生成包络时同一公式回填一个 `normal_clearance_mm` 来证明自己正确。`mold_pair.npz`
 同时保存设计目标、公式场和独立实测最小距离。
 
@@ -124,11 +131,13 @@ Blender、切片软件或装配检查。
 | `min_clearance_mm` | 0.1–2.0 | 最小有效间隙 | 0.3 |
 | `backing_mm` | 2.0–20.0 | 阴阳模承压底板厚度 | 5.0 |
 | `edge_margin_mm` | 2.0–15.0 | 浮雕外的平坦止口宽度 | 4.0 |
+| `max_plate_mm` | 40.0–300.0 | 扩边后单边模具允许的最大外廓 | 120.0 |
 | `sampling_feature_mm` | 0.05–2.0 | 需要保留的最小几何特征 | 0.2 |
 | `sampling_mode` | `native` / `resample` | 使用母版原高度场或重新采样 | `native` |
 
 M1 固定采用 `external_jig`：输出主模具实体和最小定位说明，定位柱/孔、排气槽不暴露为
-尚未生效的自由参数，留到 M3。这样核心压制面不依赖不稳定的网格布尔操作。
+尚未生效的自由参数，留到 M3。这样核心压制面不依赖不稳定的网格布尔操作。扩边后的
+最终宽高不得超过 `max_plate_mm`；最终尺寸和拒绝原因必须写入 manifest。
 
 ---
 
@@ -162,7 +171,7 @@ revisions/<mold_revision_id>/
 - 有效主体蒙版、平坦止口蒙版、原母版核心范围和扩边范围。
 
 manifest 必须保存：母版修订 ID、母版文件哈希、上游 photo/mask/depth/master 修订 ID 和哈希、
-参数、算法版本、采样来源、球形偏置核、设计/实测最小间隙、最小边框余量、扩边量、水密检查、
+参数、算法版本、采样来源、球形偏置核、离散 guard、设计/实测最小间隙、最小边框余量、扩边量、水密检查、
 体积检查、相交检查、继承的视觉状态、警告和 `manufacturing_validated=false`。M1 的 `README.txt`
 至少包含版本、参数、文件清单、警告和实物未验证声明；M2 再扩展为完整装配说明。
 
@@ -176,7 +185,7 @@ manifest 必须保存：母版修订 ID、母版文件哈希、上游 photo/mask
 
 1. 新增 `domain/leather_molds.py`：参数对象、校验、数据结构和端口合同。
 2. 新增 `algorithms/leather_mold_pair.py`：单侧最大坡度、扩边、球形偏置上包络、阳模/阴模
-   高度场、独立最近距离采样和几何验收计算。
+   高度场、离散 guard、双向独立最近距离采样和几何验收计算。
 3. 新增 `application/leather_mold_workbench.py` 与 `LeatherMoldGeometryPort`：应用层负责验证同一
    项目库中的 photo/mask/depth/master 四级上游、继承 `visual_review`/warnings，并原子发布新修订；
    infrastructure 只负责几何与文件。
@@ -205,7 +214,10 @@ python -m pet_leather_studio --project <project> generate-leather-molds \
 
 1. 三维预览同时显示阳模、阴模内表面和半透明皮革间隙层。
 2. 显示最小/最大法向间隙、最陡坡度、最小边框和采样间距。
-3. 对母版网格采样和原生高度场分别记录误差；超过 `sampling_feature_mm / 4` 时阻止“精细模具”导出。
+3. 对母版网格采样和原生高度场分别记录误差。`native` 只表示不再降采样，不能凭空获得
+   小于原始 `dx/dy` 的物理细节；当用户要求的 `sampling_feature_mm` 小于原生采样间距的
+   四倍时，M2 必须显示“源分辨率不足”，且禁止标记为精细模具。`resample` 路径另按
+   `sampling_feature_mm / 4` 检查采样间距。
 4. 新增 `assembly_report.json` 和可读的 `README.txt`，供打印服务商使用。
 
 ### M3：定位与试压校准
@@ -225,8 +237,10 @@ python -m pet_leather_studio --project <project> generate-leather-molds \
 
 - 阳模和阴模的 OBJ/STL 均可由 trimesh 重读，水密、法向一致、体积为正。
 - 输出坐标与母版一致，单位为 mm；OBJ/STL 边界与高度场误差不超过 `1e-4 mm`。
-- 公式场与实测场分开验收：设计包络场完整、无 NaN；三角网格独立最近距离最小值不小于
-  `t_effective - distance_tolerance_mm`，其中 `distance_tolerance_mm = max(0.05, 0.25 × max(dx, dy))`。
+- 公式场与实测场分开验收：设计包络场完整、无 NaN；阳模→阴模、阴模→阳模两方向的
+  三角网格独立最近距离最小值均不小于 `t_effective - distance_tolerance_mm`，其中
+  `distance_tolerance_mm = max(0.05, 0.25 × max(dx, dy))`。该容差是离散网格验收容差，
+  不是对连续球包络误差预先作出的数值承诺。
 - 阳模与阴模不存在相交；任何采样点的 Z 向间隙均大于零。
 - 原生照片高度场路径不重新降采样；如果必须重采样，报告明确最大误差和 `sampling_sufficient=false`。
 - 每个输出文件及参数可追溯到同项目库的唯一母版修订与三项照片上游；母版的
